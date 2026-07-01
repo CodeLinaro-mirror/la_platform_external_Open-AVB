@@ -88,11 +88,21 @@ void system_log(int loglevel, const char *s, ...)
 
 #endif
 
+static volatile bool g_running = true;
 
 void signal_handler(int signum) {
     printf("Received signal %d\n", signum);
     utc_helper_deinit();
-    exit(0);
+    g_running = false;
+}
+
+void test_update_callback(int sync_status) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    
+    UTC_TEST_LOG_INFO("\n>>> CALLBACK RECEIVED <<<\n");
+    UTC_TEST_LOG_INFO("    New Sync Status: %d\n", sync_status);
+    UTC_TEST_LOG_INFO("    Local Time:      %ld.%ld\n", ts.tv_sec, ts.tv_nsec);
 }
 
 int main(int argc, char *argv[])
@@ -112,14 +122,36 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    sync_status = utcGetSyncStatus();
-    utc_time = utcGetUtcTime();
-    struct timespec real = {0};
-    clock_gettime(CLOCK_REALTIME, &real);
+    bool monitor_mode = (argc > 1 && strcmp(argv[1], "m") == 0);
 
-    UTC_TEST_LOG_INFO("utc status %d last updated utc time %lu, current utc time %lu.%lu\n", sync_status, utc_time, real.tv_sec, real.tv_nsec);
+    if (monitor_mode) {
+        UTC_TEST_LOG_INFO("Starting Monitor Mode. Waiting for updates...\n");
+        
+        if (utcRegisterUpdateCallback(test_update_callback) != 0) {
+             UTC_TEST_LOG_ERROR("Failed to register callback!\n");
+             utc_helper_deinit();
+             return -1;
+        }
 
-    utc_helper_deinit();
+        sync_status = utcGetSyncStatus();
+        UTC_TEST_LOG_INFO("Initial Status: %d\n", sync_status);
+
+        while (g_running) {
+            sleep(1); 
+        }
+        
+        UTC_TEST_LOG_INFO("Exiting Monitor Mode...\n");
+
+    } else {
+        sync_status = utcGetSyncStatus();
+        utc_time = utcGetUtcTime();
+        struct timespec real = {0};
+        clock_gettime(CLOCK_REALTIME, &real);
+
+        UTC_TEST_LOG_INFO("utc status %d last updated utc time %lu, current utc time %lu.%lu\n", sync_status, utc_time, real.tv_sec, real.tv_nsec);
+
+        utc_helper_deinit();
+    }
 
     return 0;
 }

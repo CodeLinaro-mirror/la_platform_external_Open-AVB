@@ -120,10 +120,22 @@ IEEE1588Clock::IEEE1588Clock
     this->ipc = ipc;
     memset( &LastEBestIdentity, 0xFF, sizeof( LastEBestIdentity ));
     timerq_lock = lock_factory->createLock( oslock_recursive );
+    if (timerq_lock == NULL) {
+        GPTP_LOG_ERROR("Failed to create timerq_lock");
+    }
     // This should be done LAST!! to pass fully initialized clock object
     timerq = timerq_factory->createOSTimerQueue( this );
+    if (timerq == NULL) {
+        GPTP_LOG_ERROR("Failed to create timerq");
+    }
     fup_info = new FollowUpTLV();
+    if (fup_info == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate fup_info");
+    }
     fup_status = new FollowUpTLV();
+    if (fup_status == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate fup_status");
+    }
     return;
 }
 
@@ -238,6 +250,10 @@ void IEEE1588Clock::addEventTimer
 ( CommonPort *target, Event e, unsigned long long time_ns )
 {
     event_descriptor_t *event_descriptor = new event_descriptor_t();
+    if (event_descriptor == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate event_descriptor in addEventTimer");
+        return;
+    }
     event_descriptor->event = e;
     event_descriptor->port = target;
     timerq->addEvent

@@ -96,6 +96,10 @@ PTPMessageCommon *buildPTPMessage
   EtherPort *port )
 {
     OSTimer *timer = port->getTimerFactory()->createTimer();
+    if (timer == NULL) {
+        GPTP_LOG_ERROR("Failed to create timer in buildPTPMessage");
+        return NULL;
+    }
     PTPMessageCommon *msg = NULL;
     PTPMessageId messageId;
     MessageType messageType;
@@ -603,6 +607,14 @@ PTPMessageCommon *buildPTPMessage
     delete timer;
     return msg;
 abort:
+    /* If msg was allocated but sourcePortIdentity was not yet transferred to it,
+     * set it to NULL to prevent the destructor from deleting an uninitialized pointer.
+     * Then delete msg and sourcePortIdentity separately. */
+    if (msg != NULL) {
+        msg->sourcePortIdentity = NULL;
+        delete msg;
+        msg = NULL;
+    }
     delete sourcePortIdentity;
     delete timer;
     return NULL;
@@ -611,6 +623,10 @@ abort:
 bool PTPMessageCommon::getTxTimestamp( EtherPort *port, uint32_t link_speed )
 {
     OSTimer *timer = port->getTimerFactory()->createTimer();
+    if (timer == NULL) {
+        GPTP_LOG_ERROR("Failed to create timer in getTxTimestamp");
+        return false;
+    }
     int ts_good;
     Timestamp tx_timestamp;
     uint32_t unused;
@@ -1037,10 +1053,13 @@ void PTPMessageSync::processMessage( EtherPort *port )
                     GPTP_LOG_INFO("currentTimeStamp: %" PRIu64 " previousTimeStamp: %" PRIu64 " Difference: %" PRId64 " operSyncIntervalNS: %" PRIu64 " min_threshold %" PRIu64 " max_threshold %" PRIu64 " ", TIMESTAMP_TO_NS(currentTimeStamp), TIMESTAMP_TO_NS(previousTimeStamp), successiveSyncArrivalDifference, operSyncIntervalNS, min_threshold, max_threshold);
 
                     PTPMessageSignalling *sigMsg = new PTPMessageSignalling(port);
-                    sigMsg->setMessageType(SIGNALLING_MESSAGE);
                     if (sigMsg) {
+                        sigMsg->setMessageType(SIGNALLING_MESSAGE);
                         sigMsg->setintervals(PTPMessageSignalling::sigMsgInterval_NoChange, port->getSyncInterval(), PTPMessageSignalling::sigMsgInterval_NoChange);
                         sigMsg->sendPort(port, NULL);
+                        delete sigMsg;
+                    } else {
+                        GPTP_LOG_ERROR("Failed to allocate PTPMessageSignalling in processMessage");
                     }
                     sendSigMsgCounter = 1;
                 }
@@ -1380,7 +1399,7 @@ void PTPMessageFollowUp::processMessage( EtherPort *port )
     local_ptpRatios.system_offset       = local_system_offset_avg.get();
     local_ptpRatios.q_offset            = local_q_offset_avg.get();
     local_ptpRatios.boot_offset         = local_boot_offset_avg.get();
-    local_ptpRatios.system_freq_offset  = local_system_offset_avg.get();
+    local_ptpRatios.system_freq_offset  = local_system_freq_offset_avg.get();
     local_ptpRatios.q_freq_offset       = local_q_freq_offset_avg.get();
     local_ptpRatios.boot_freq_offset    = local_boot_freq_offset_avg.get();
 
@@ -1450,6 +1469,11 @@ PTPMessagePathDelayReq::PTPMessagePathDelayReq
 void PTPMessagePathDelayReq::processMessage( EtherPort *port )
 {
     OSTimer *timer = port->getTimerFactory()->createTimer();
+    if (timer == NULL) {
+        GPTP_LOG_ERROR("Failed to create timer in PTPMessagePathDelayReq::processMessage");
+        _gc = true;
+        return;
+    }
     PortIdentity resp_fwup_id;
     PortIdentity requestingPortIdentity_p;
     PTPMessagePathDelayResp *resp;
@@ -1500,6 +1524,11 @@ void PTPMessagePathDelayReq::processMessage( EtherPort *port )
     }
 
     resp_fwup = new PTPMessagePathDelayRespFollowUp(port);
+    if (resp_fwup == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate PTPMessagePathDelayRespFollowUp");
+        delete resp;
+        goto done;
+    }
     port->getPortIdentity(resp_fwup_id);
     port->setLastvalidSeqID(sequenceId);
     resp_fwup->setPortIdentity(&resp_fwup_id);

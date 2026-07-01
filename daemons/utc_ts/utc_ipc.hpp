@@ -20,6 +20,7 @@ typedef struct
 typedef struct
 {
     pthread_mutex_t pMutex;
+    pthread_cond_t  pCond;
     gUtcTimeData gData;
     unsigned char checksum;
 }UtcShm;

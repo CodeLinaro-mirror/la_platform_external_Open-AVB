@@ -66,7 +66,13 @@ CommonPort::CommonPort( PortInit_t *portInit ) :
     syncClocks = portInit->syncClocks;
     net_label = portInit->net_label;
     link_thread = thread_factory->createThread();
+    if (link_thread == NULL) {
+        GPTP_LOG_ERROR("Failed to create link_thread");
+    }
     listening_thread = thread_factory->createThread();
+    if (listening_thread == NULL) {
+        GPTP_LOG_ERROR("Failed to create listening_thread");
+    }
     sync_receipt_thresh = portInit->syncReceiptThreshold;
     wrongSeqIDCounter = 0;
     _peer_rate_offset = portInit->_peer_rate_offset;
@@ -803,14 +809,18 @@ bool CommonPort::processEvent( Event e )
             if ( asCapable) {
                 PTPMessageAnnounce *annc =
                     new PTPMessageAnnounce(this);
-                PortIdentity dest_id;
-                PortIdentity gmId;
-                ClockIdentity clock_id = clock->getClockIdentity();
-                gmId.setClockIdentity(clock_id);
-                getPortIdentity( dest_id );
-                annc->setPortIdentity( &dest_id );
-                annc->sendPort( this, NULL );
-                delete annc;
+                if (annc == NULL) {
+                    GPTP_LOG_ERROR("Failed to allocate PTPMessageAnnounce");
+                } else {
+                    PortIdentity dest_id;
+                    PortIdentity gmId;
+                    ClockIdentity clock_id = clock->getClockIdentity();
+                    gmId.setClockIdentity(clock_id);
+                    getPortIdentity( dest_id );
+                    annc->setPortIdentity( &dest_id );
+                    annc->sendPort( this, NULL );
+                    delete annc;
+                }
             }
 
             startAnnounceIntervalTimer
@@ -930,6 +940,10 @@ void CommonPort::startAnnounce()
 
 int CommonPort::getTimestampVersion()
 {
+    if (_hw_timestamper == NULL) {
+        GPTP_LOG_ERROR("_hw_timestamper is NULL in getTimestampVersion");
+        return -1;
+    }
     return _hw_timestamper->getVersion();
 }
 

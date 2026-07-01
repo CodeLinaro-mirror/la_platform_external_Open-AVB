@@ -80,7 +80,7 @@ net_result LinuxNetworkInterface::nrecv
 ( LinkLayerAddress *addr, uint8_t *payload, size_t &length )
 {
     fd_set readfds;
-    int err = -1;
+    int err = 0;
     struct msghdr msg;
     struct cmsghdr *cmsg;
     union {
@@ -384,6 +384,10 @@ bool LinuxTimestamperGeneric::HWTimestamper_init
     struct ptp_clock_caps ptp_capability;
 #endif
     _private = new LinuxTimestamperGenericPrivate;
+    if (_private == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate LinuxTimestamperGenericPrivate");
+        return false;
+    }
     pthread_mutex_init( &_private->cross_stamp_lock, NULL );
     // Determine the correct PTP clock interface
     //phc_index = findPhcIndex( iface_label );

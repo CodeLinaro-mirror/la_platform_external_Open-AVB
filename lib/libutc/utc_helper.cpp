@@ -15,7 +15,9 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <utc_ipc.hpp>
+#include "utc_helper.h"
 
 #ifdef ANDROID
 #include <log/log.h>
@@ -46,6 +48,10 @@ enum _LOGGER_SEVERITY {
 
 static int gUTCShmFd = -1;
 static char *gUTCMmap = NULL;
+
+static utc_update_cb_t gUserCallback = NULL;
+static pthread_t gMonitorThreadId = 0;
+static volatile bool gMonitorRunning = false;
 
 unsigned char calculateChecksum(const char *str, size_t length) {
     unsigned char checksum = 0;
@@ -109,8 +115,51 @@ static void UTCMemDeinit()
         }
         gUTCShmFd = -1;
 
-        UTC_LIB_LOG_INFO("UTCMemDeinit %d\n", UTC_SHM_SIZE);
+        UTC_LIB_LOG_INFO("UTCMemDeinit %zu\n", UTC_SHM_SIZE);
     }
+}
+
+static void* MonitorThreadFunc(void* arg) {
+    UTC_LIB_LOG_INFO("Monitor thread started\n");
+    
+    if (gUTCMmap == NULL) {
+        if (!UTCMemInit()) {
+            UTC_LIB_LOG_ERROR("Monitor thread cannot init memory, exiting\n");
+            return NULL;
+        }
+    }
+
+    UtcShm* pUtcShm = (UtcShm*)gUTCMmap;
+    
+    while (gMonitorRunning) {
+        pthread_mutex_lock(&pUtcShm->pMutex);
+
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        ts.tv_sec += 1;
+
+        int rc = pthread_cond_timedwait(&pUtcShm->pCond, &pUtcShm->pMutex, &ts);
+
+        if (rc == 0) {
+            gUtcTimeData* data = (gUtcTimeData*)(&pUtcShm->gData);
+            if (calculateChecksum((const char *)data, sizeof(gUtcTimeData)) == pUtcShm->checksum) {
+
+                int current_status = data->sync_status;
+                pthread_mutex_unlock(&pUtcShm->pMutex);
+                if (gUserCallback) {
+                    gUserCallback(current_status);
+                }
+            } else {
+                UTC_LIB_LOG_ERROR("Monitor Checksum failed\n");
+                pthread_mutex_unlock(&pUtcShm->pMutex);
+            }
+        } else {
+            pthread_mutex_unlock(&pUtcShm->pMutex);
+        }
+    }
+    
+    UTC_LIB_LOG_INFO("Monitor thread exiting\n");
+    return NULL;
 }
 
 int utcGetSyncStatus(){
@@ -157,6 +206,52 @@ uint64_t utcGetUtcTime(){
     return utc_time;
 }
 
+uint64_t utcGetLastSyncTime(){
+    uint64_t utc_time = 0;
+    if (gUTCMmap == NULL) {
+        UTC_LIB_LOG_ERROR("utcGetLastSyncTime memory failure %p\n", gUTCMmap);
+        UTCMemInit();
+        return false;
+    }
+
+    UtcShm* pUtcShm = (UtcShm*)gUTCMmap;
+    gUtcTimeData* data = (gUtcTimeData*)(&pUtcShm->gData);
+    pthread_mutex_lock(&pUtcShm->pMutex);
+    if (calculateChecksum((const char *)data, sizeof(gUtcTimeData)) != pUtcShm->checksum) {
+        UTC_LIB_LOG_ERROR("memory checksum failure \n");
+        pthread_mutex_unlock(&pUtcShm->pMutex);
+        return false;
+    }
+    utc_time = data->utc_time;
+    pthread_mutex_unlock(&pUtcShm->pMutex);
+
+    return utc_time;
+}
+
+uint64_t utcRegisterUpdateCallback(utc_update_cb_t cb) {
+    if (cb == NULL) return false;
+    
+    gUserCallback = cb;
+
+    if (!gMonitorRunning) {
+        if (gUTCMmap == NULL) {
+            if (!UTCMemInit()) {
+                UTC_LIB_LOG_ERROR("utcRegisterUpdateCallback memory failure %p\n", gUTCMmap);
+                return false;
+            }
+        }
+
+        gMonitorRunning = true;
+        int ret = pthread_create(&gMonitorThreadId, NULL, MonitorThreadFunc, NULL);
+        if (ret != 0) {
+            UTC_LIB_LOG_ERROR("Failed to create monitor thread: %d\n", ret);
+            gMonitorRunning = false;
+            return false;
+        }
+    }
+    return 0;
+}
+
 int utc_helper_init() {
     if (!UTCMemInit()){
         UTC_LIB_LOG_ERROR("memory init failure \n");
@@ -166,6 +261,20 @@ int utc_helper_init() {
 }
 
 void utc_helper_deinit() {
+
+    if (gMonitorRunning) {
+        UTC_LIB_LOG_INFO("Stopping monitor thread...\n");
+        gMonitorRunning = false;
+
+        if (gMonitorThreadId != 0) {
+            pthread_join(gMonitorThreadId, NULL);
+            gMonitorThreadId = 0;
+        }
+        UTC_LIB_LOG_INFO("Monitor thread stopped.\n");
+    }
+
+    gUserCallback = NULL;
+
     UTCMemDeinit();
 }
 

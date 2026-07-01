@@ -671,7 +671,16 @@ int main(int argc, char **argv)
 #endif
     memset(config_file_path, 0, 512);
     GPTPPersist *pGPTPPersist = NULL;
+    LinuxNetworkInterfaceFactory *default_factory = NULL;
+    LinuxTimerQueueFactory *timerq_factory = NULL;
+    LinuxLockFactory *lock_factory = NULL;
+    LinuxTimerFactory *timer_factory = NULL;
+    LinuxConditionFactory *condition_factory = NULL;
     LinuxThreadFactory *thread_factory = new LinuxThreadFactory();
+    if (thread_factory == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate thread_factory");
+        return -1;
+    }
     // Block SIGUSR1
     {
         sigset_t block;
@@ -741,15 +750,44 @@ int main(int argc, char **argv)
     portInit.bypass_if_wait = false;
     portInit.wait_for_sync = false;
     portInit.tsc_enable = false;
-    LinuxNetworkInterfaceFactory *default_factory =
-        new LinuxNetworkInterfaceFactory;
+    default_factory = new LinuxNetworkInterfaceFactory;
+    if (default_factory == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate default_factory");
+        CLEANUP_RESOURCES();
+        return -1;
+    }
     OSNetworkInterfaceFactory::registerFactory
     (factory_name_t("default"), default_factory);
-    LinuxTimerQueueFactory *timerq_factory = new LinuxTimerQueueFactory();
-    LinuxLockFactory *lock_factory = new LinuxLockFactory();
-    LinuxTimerFactory *timer_factory = new LinuxTimerFactory();
-    LinuxConditionFactory *condition_factory = new LinuxConditionFactory();
+    timerq_factory = new LinuxTimerQueueFactory();
+    if (timerq_factory == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate timerq_factory");
+        CLEANUP_RESOURCES();
+        return -1;
+    }
+    lock_factory = new LinuxLockFactory();
+    if (lock_factory == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate lock_factory");
+        CLEANUP_RESOURCES();
+        return -1;
+    }
+    timer_factory = new LinuxTimerFactory();
+    if (timer_factory == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate timer_factory");
+        CLEANUP_RESOURCES();
+        return -1;
+    }
+    condition_factory = new LinuxConditionFactory();
+    if (condition_factory == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate condition_factory");
+        CLEANUP_RESOURCES();
+        return -1;
+    }
     ipc = new LinuxSharedMemoryIPC();
+    if (ipc == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate LinuxSharedMemoryIPC");
+        CLEANUP_RESOURCES();
+        return -1;
+    }
 
     /* Create Low level network interface object */
     if ( argc < 2 ) {
@@ -936,6 +974,11 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "ini") != 0) {
         PLAT_strlcpy(ifname_eth, argv[1], IFNAME_SIZE);
         ifname = new InterfaceName( argv[1], strlen(argv[1]) );
+        if (ifname == NULL) {
+            GPTP_LOG_ERROR("Failed to allocate InterfaceName for argv[1]");
+            CLEANUP_RESOURCES();
+            return -1;
+        }
     } else if (!use_config_file) {
         GPTP_LOG_ERROR( "Interface name required/ ini file is required\n" );
         print_usage( argv[0] );
@@ -974,6 +1017,12 @@ int main(int argc, char **argv)
 #else
     timestamper = new LinuxTimestamperGeneric();
 #endif
+    if (timestamper == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate EtherTimestamper");
+        GPTP_LOG_UNREGISTER();
+        CLEANUP_RESOURCES();
+        return -1;
+    }
 
     if (pthread_sigmask(SIG_BLOCK, &set, NULL) != 0) {
         perror("pthread_sigmask()");
@@ -1026,6 +1075,12 @@ int main(int argc, char **argv)
                 std::string if_name = iniParser.getIfaceName();
                 PLAT_strlcpy(ifname_eth, if_name.c_str(), IFNAME_SIZE);
                 ifname = new InterfaceName( ifname_eth, strlen(ifname_eth) );
+                if (ifname == NULL) {
+                    GPTP_LOG_ERROR("Failed to allocate InterfaceName from ini config");
+                    GPTP_LOG_UNREGISTER();
+                    CLEANUP_RESOURCES();
+                    return -1;
+                }
             }
 
             if (!portInit.testMode && iniParser.getDebugLog() != 0) {
@@ -1138,6 +1193,12 @@ int main(int argc, char **argv)
     pClock = new IEEE1588Clock
     ( false, syntonize, priority1, priority2, clockClass, timerq_factory, ipc,
       lock_factory );
+    if (pClock == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate IEEE1588Clock");
+        GPTP_LOG_UNREGISTER();
+        CLEANUP_RESOURCES();
+        return -1;
+    }
 
     if ( restoredataptr != NULL ) {
         restorefailed =
@@ -1198,6 +1259,12 @@ int main(int argc, char **argv)
     }
 #endif
     pPort = new EtherPort(&portInit);
+    if (pPort == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate EtherPort");
+        GPTP_LOG_UNREGISTER();
+        CLEANUP_RESOURCES();
+        return -1;
+    }
     GPTP_LOG_ERROR("pPort TSC enable flag: %d\n", pPort->getTSC());
     if (!pPort->init_port()) {
         GPTP_LOG_ERROR("failed to initialize port");
@@ -1361,6 +1428,14 @@ int main(int argc, char **argv)
 
 void gPTPPersistWriteCB(char *bufPtr, uint32_t bufSize)
 {
+    if (pClock == NULL || pPort == NULL) {
+        GPTP_LOG_ERROR("pClock or pPort is NULL in gPTPPersistWriteCB");
+        return;
+    }
+    if (bufPtr == NULL) {
+        GPTP_LOG_ERROR("bufPtr is NULL in gPTPPersistWriteCB");
+        return;
+    }
     off_t restoredatalength = bufSize;
     off_t restoredatacount = restoredatalength;
     char *restoredataptr = NULL;

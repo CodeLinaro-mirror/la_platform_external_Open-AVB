@@ -137,6 +137,10 @@ net_result LinuxNetworkInterface::send
     sockaddr_ll *remote = NULL;
     int err;
     remote = new struct sockaddr_ll;
+    if (remote == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate sockaddr_ll in send()");
+        return net_fatal;
+    }
     memset( remote, 0, sizeof( *remote ));
     remote->sll_family = AF_PACKET;
     remote->sll_protocol = PLAT_htons( etherType );
@@ -582,6 +586,11 @@ OSTimerQueue *LinuxTimerQueueFactory::createOSTimerQueue
 {
     LinuxTimerQueue *ret = new LinuxTimerQueue();
 
+    if (ret == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate LinuxTimerQueue");
+        return NULL;
+    }
+
     if ( !ret->init() ) {
         delete ret;
         return NULL;
@@ -611,6 +620,10 @@ bool LinuxTimerQueue::addEvent
     int err;
     LinuxTimerQueueMap_t::iterator iter;
     outer_arg = new LinuxTimerQueueActionArg;
+    if (outer_arg == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate LinuxTimerQueueActionArg in addEvent");
+        return false;
+    }
     outer_arg->inner_arg = *arg;
     outer_arg->rm = rm;
     outer_arg->func = func;
@@ -633,6 +646,7 @@ bool LinuxTimerQueue::addEvent
                 (CLOCK_MONOTONIC, &outer_arg->sevp, &outer_arg->timer_handle)
                 == -1) {
             GPTP_LOG_ERROR("timer_create failed - %s", strerror(errno));
+            delete outer_arg;
             return false;
         }
 
@@ -652,6 +666,9 @@ bool LinuxTimerQueue::addEvent
             fprintf
             ( stderr, "Failed to arm timer: %s\n",
               strerror( errno ));
+            timer_delete(outer_arg->timer_handle);
+            timerQueueMap.erase(key);
+            delete outer_arg;
             return false;
         }
     }
@@ -1044,6 +1061,12 @@ bool LinuxThread::start(OSThreadFunction function, void *arg)
     }
 
     arg_inner = new OSThreadArg();
+    if (arg_inner == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate OSThreadArg in LinuxThread::start");
+        delete _private;
+        _private = NULL;
+        return false;
+    }
     arg_inner->func = function;
     arg_inner->arg = arg;
     sigemptyset(&set);
@@ -1053,6 +1076,8 @@ bool LinuxThread::start(OSThreadFunction function, void *arg)
     if (err != 0) {
         GPTP_LOG_ERROR
         ("Add timer pthread_sigmask( SIG_BLOCK ... )");
+        delete arg_inner;
+        arg_inner = NULL;
         return false;
     }
 
@@ -1060,6 +1085,9 @@ bool LinuxThread::start(OSThreadFunction function, void *arg)
                          arg_inner);
 
     if (err != 0) {
+        GPTP_LOG_ERROR("pthread_create failed in LinuxThread::start");
+        delete arg_inner;
+        arg_inner = NULL;
         return false;
     }
 
@@ -1394,7 +1422,15 @@ void LinuxSharedMemoryIPC::vfio_ptp(int64_t ml_phoffset,
         uint64_t gptp_time_s_pre = 0;
         a_lock1++;
 
+#ifdef PTP_SW_QTIMER
+#if __aarch64__
+        asm volatile("mrs %0, cntvct_el0" : "=r" (qtimer_tick));
+#else
+        asm volatile("mrrc p15, 1, %Q0, %R0, c14" : "=r" (qtimer_tick));
+#endif
+#else
         qtimer_tick = in64((uintptr_t)qtimer_base_addr);
+#endif
         ptimedata->local_time = local_time;
         /*Now Qtimer run with 19.2MHz clock*/
         uint64_t qtimer_ns = qtimer_tick * (1000000000.0 / 19200000.0);

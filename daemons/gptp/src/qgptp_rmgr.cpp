@@ -67,6 +67,14 @@ uint64_t get_ntn_time(char *ifname)
 static void get_timesync_diagstats (char *ifname,
                                     PortAutoTimeSyncDiagData_t *timesync_diagstats)
 {
+    if (qgptp_port == NULL) {
+        GPTP_LOG_ERROR("qgptp_port is NULL in get_timesync_diagstats");
+        return;
+    }
+    if (timesync_diagstats == NULL) {
+        GPTP_LOG_ERROR("timesync_diagstats is NULL in get_timesync_diagstats");
+        return;
+    }
     timesync_diagstats->timeSyncDriftCount =
         qgptp_port->timesync_diagstats.timeSyncDriftCount;
     timesync_diagstats->timeSyncStatusDID =
@@ -159,6 +167,11 @@ int get_gptp_stats(char *reply_msg, uint64_t  replytime)
 static float get_ppm(char *ifname)
 {
     float ret = 0;
+
+    if (qgptp_port == NULL) {
+        GPTP_LOG_ERROR("qgptp_port is NULL in get_ppm");
+        return ret;
+    }
 
     if (qgptp_port->getClock()) {
         ret = qgptp_port->getClock()->getPPMValue();

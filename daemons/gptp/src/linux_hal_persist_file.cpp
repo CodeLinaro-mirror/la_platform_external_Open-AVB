@@ -152,6 +152,8 @@ class LinuxGPTPPersistFile : public GPTPPersist
                 }
 
                 if (restoredata == ((void *) -1)) {
+                    GPTP_LOG_ERROR("Failed to remap/mmap restore file in triggerWriteStorage");
+                    return result;  // Do not call writeCB with invalid pointer
                 } else {
                     storedDataLength = memoryDataLength;
                     result = true;
@@ -169,4 +171,3 @@ GPTPPersist* makeLinuxGPTPPersistFile()
 {
     return new LinuxGPTPPersistFile();
 }
-

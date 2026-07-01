@@ -62,6 +62,7 @@ enum _LOGGER_SEVERITY {
 
 /* This is the threshold in ns for which frequency adjustments will be made */
 #define PHASE_ERROR_THRESHOLD (1000000000)
+#define DELTA_TIME_THRESHOLD (5000000)
 
 /* This is the maximum count of phase error, outside of the threshold before
    adjustment is performed */
@@ -114,9 +115,8 @@ typedef enum {
 } ValueState;
 
 typedef enum {
-    VEHICLE_UTC_TIME_VALIDITY_TYPE_T_UNSPECIFIED = 0,
-    VEHICLE_UTC_TIME_VALIDITY_TYPE_T_INVALID = 1,
-    VEHICLE_UTC_TIME_VALIDITY_TYPE_T_VALID = 2,
+    VEHICLE_UTC_TIME_VALIDITY_TYPE_T_INVALID = 0,
+    VEHICLE_UTC_TIME_VALIDITY_TYPE_T_VALID = 1,
 } VehicleUtcTimeValidityTypeT;
 
 struct utc_timeinfo_t {
@@ -166,7 +166,6 @@ int realtime_adjust_freq(float freq_offset)
     return 0;
 }
 
-
 unsigned char calculateChecksum(const char *str, size_t length) {
     unsigned char checksum = 0;
     for (size_t i = 0; i < length; i++) {
@@ -180,6 +179,7 @@ void updateShm(gUtcTimeData *pdata)
 {
     gUtcTimeData* ptimedata;
     UtcShm* pUtcShm;
+    static int previous_sync_status = false;
 
     if (master_offset_buffer != NULL) {
         pUtcShm = (UtcShm*)master_offset_buffer;
@@ -190,6 +190,11 @@ void updateShm(gUtcTimeData *pdata)
         ptimedata->utc_time = pdata->utc_time;
         ptimedata->gptp_time = pdata->gptp_time;
         pUtcShm->checksum = calculateChecksum((const char *)ptimedata, sizeof(gUtcTimeData));
+        if (previous_sync_status != ptimedata->sync_status)
+        {
+            previous_sync_status = ptimedata->sync_status;
+            pthread_cond_broadcast(&pUtcShm->pCond);
+        }
         pthread_mutex_unlock(&pUtcShm->pMutex);
     }
 }
@@ -206,7 +211,7 @@ void updateTime(utc_timeinfo_t* update)
     static float _ppm = 0;
     struct timespec real;
     long double phase_error;
-    static float time_ratio = 1.0;
+    static double time_ratio = 1.0;
     static uint64_t cnt = 0;
     utc_timeinfo_t utc_update;
 
@@ -214,8 +219,8 @@ void updateTime(utc_timeinfo_t* update)
     memcpy(&utc_update, update, sizeof(utc_timeinfo_t));
 
     if (prev_utc_time != 0 && utc_update.curPtpTimeNanoSec != prev_gptp_time) {
-        time_ratio = (float)(utc_update.curUtcTimeNanoSec -  prev_utc_time) /
-                (utc_update.curPtpTimeNanoSec - prev_gptp_time);
+        time_ratio = (double)(utc_update.curUtcTimeNanoSec -  prev_utc_time) /
+                (double)(utc_update.curPtpTimeNanoSec - prev_gptp_time);
     } else {
         time_ratio = 1.0;
     }
@@ -224,19 +229,24 @@ void updateTime(utc_timeinfo_t* update)
     sync_status = gptpGetSyncStatus();
     clock_gettime(CLOCK_REALTIME, &real);
 
-    if (!sync_status) {
+    if (!sync_status || !utc_update.curPtpTimeNanoSec) {
         UTC_LOG_INFO("directly use someip utc as gptp is not in sync");
         curr_expected_utc = utc_update.curUtcTimeNanoSec;
     }
     else {
-        curr_expected_utc = utc_update.curUtcTimeNanoSec + (uint64_t)((curr_gptp -
+        if (time_ratio > MIN_LS_RATIO && time_ratio < MAX_LS_RATIO) {
+            curr_expected_utc = utc_update.curUtcTimeNanoSec + (uint64_t)((curr_gptp -
                             utc_update.curPtpTimeNanoSec) * time_ratio);
+        } else {
+            curr_expected_utc = utc_update.curUtcTimeNanoSec + (curr_gptp - utc_update.curPtpTimeNanoSec);
+        }
     }
 
     curr_utc = (real.tv_sec) * 1000000000LL + real.tv_nsec;
     delta_utc = curr_utc - curr_expected_utc;
     phase_error = (long double) - delta_utc;
 
+#ifdef ENABLE_ADJUST_TIME
     if ((fabsl(phase_error) > PHASE_ERROR_THRESHOLD) || prev_utc_time == 0
             || ppm_miss_count > 10) {
         realtime_adjust_offset(phase_error);
@@ -275,6 +285,11 @@ void updateTime(utc_timeinfo_t* update)
 
         realtime_adjust_freq(_ppm);
     }
+#else
+    if (llabs(delta_utc) > DELTA_TIME_THRESHOLD) {
+        realtime_adjust_offset(phase_error);
+    }
+#endif
 
 
     gUtcTimeData utcData = {0};
@@ -304,6 +319,7 @@ void* habLoop(void* param)
         memset(&update, 0, sizeof(update));
 
         do {
+            len = sizeof(update);
             ret = habmm_socket_recv(hab_hdl, &update, &len, 0, 0);
         } while (-EINTR == ret || -EAGAIN == ret);
 
@@ -312,24 +328,21 @@ void* habLoop(void* param)
             return NULL;
         }
 
-        if (update.state == VALUE_STATE_VALID
-                && update.sync_state == VEHICLE_UTC_TIME_VALIDITY_TYPE_T_VALID ) {
-            updateTime(&update);
-            if (update.sync_state != last_sync_state) {
-                UTC_LOG_INFO("sync_state change, prev(%d), curr(%d)", last_sync_state, update.sync_state);
-                last_sync_state = update.sync_state;
-                if (utc_fd) {
-                    char status[32];
-                    snprintf(status, sizeof(status), "sync: %d\n", update.sync_state);
-                    lseek(utc_fd, 0, SEEK_SET);
-                    write(utc_fd, status, strlen(status));
-                }
-            }
-        } else {
-            UTC_LOG_ERROR("Ignoring UTC update as status or time is not valid\n");
+	    //Customer mentioned gvm's validity must be true when we recived utc time from qnx
+	    update.sync_state = VEHICLE_UTC_TIME_VALIDITY_TYPE_T_VALID;
+        updateTime(&update);
+        if (update.sync_state != last_sync_state) {
+            UTC_LOG_INFO("sync_state change, prev(%d), curr(%d)", last_sync_state, update.sync_state);
+            last_sync_state = update.sync_state;
         }
-    }
+        if (utc_fd) {
+            char status[32];
+            snprintf(status, sizeof(status), "%d-%llu\n", update.sync_state, update.curUtcTimeNanoSec/1000000000ULL);
+            lseek(utc_fd, 0, SEEK_SET);
+            write(utc_fd, status, strlen(status));
+        }
 
+    }
     return NULL;
 }
 
@@ -354,6 +367,7 @@ int utc_shm_init(void)
     pthread_mutexattr_t shared;
     const char* group_name;
     struct group* grp;
+    UtcShm* pShm;
     mode_t oldumask = umask(0);
     int err;
 
@@ -397,33 +411,32 @@ int utc_shm_init(void)
 
     memset(master_offset_buffer, 0x0, UTC_SHM_SIZE);
 
+    pShm = (UtcShm*)master_offset_buffer;
+
     /*create mutex attr */
-    err = pthread_mutexattr_init(&shared);
-
-    if (err != 0) {
-        UTC_LOG_ERROR("mutex attr initialization failed - %s", strerror(errno));
-        goto exit;
-    }
-
-    err = pthread_mutexattr_setpshared(&shared, 1);
-    if (err != 0) {
-        UTC_LOG_ERROR("mutex attr setpshared failed - %s", strerror(errno));
-        goto exit;
-    }
-
-    err = pthread_mutexattr_setprotocol(&shared, PTHREAD_PRIO_INHERIT);
-    if (err != 0) {
-        UTC_LOG_ERROR("mutex attr setprotocol failed - %s", strerror(errno));
-        goto exit;
-    }
+    pthread_mutexattr_init(&shared);
+    pthread_mutexattr_setpshared(&shared, PTHREAD_PROCESS_SHARED);
+    pthread_mutexattr_setprotocol(&shared, PTHREAD_PRIO_INHERIT);
 
     /*create a mutex */
-    err = pthread_mutex_init((pthread_mutex_t*)master_offset_buffer, &shared);
-
+    err = pthread_mutex_init(&pShm->pMutex, &shared);
     if (err != 0) {
         UTC_LOG_ERROR("sharedmem - Mutex initialization failed - %s", strerror(errno));
         goto exit;
     }
+
+    /*create cond attr */
+    pthread_condattr_t cond_attr;
+    pthread_condattr_init(&cond_attr);
+    pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
+    pthread_condattr_setclock(&cond_attr, CLOCK_MONOTONIC); 
+
+    err = pthread_cond_init(&pShm->pCond, &cond_attr);
+    if (err != 0) {
+        UTC_LOG_ERROR("CondVar init failed");
+        goto exit;
+    }
+
     return 0;
 
 exit:
@@ -431,6 +444,7 @@ exit:
         close(shm_fd);
         shm_fd = -1;
     }
+
     return -1;
 }
 
@@ -475,14 +489,14 @@ int utc_time_info_init(void) {
 
     utc_fd = open(UTC_TIME_INFO, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (utc_fd < 0) {
-        UTC_LOG_ERROR("open /tmp/timeinfo failed - %s", strerror(errno));
+        UTC_LOG_ERROR("open /dev/timeinfo failed - %s", strerror(errno));
         return -1;
     }
 
     if (fchown(utc_fd, -1, grp != NULL ? grp->gr_gid : 0) < 0) {
         UTC_LOG_ERROR("fchown(): Failed to set ownership - %s", strerror(errno));
     }
-    const char *status = "sync: 0\n";
+    const char *status = "0-0\n";
     write(utc_fd, status, strlen(status));
     return 0;
 }
