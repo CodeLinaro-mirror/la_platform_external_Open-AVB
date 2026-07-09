@@ -272,7 +272,11 @@ static void x_readEvent
                 if (linkUp != pPort->getLinkUpState()) {
                     pPort->setLinkUpState(linkUp);
 
-                    if (linkUp) {
+                    if (pPort->gPTP_lpm) {
+                        GPTP_LOG_INFO("watchNetLink: LPM active, "
+                                      "suppressing duplicate %s event",
+                                      linkUp ? "LINKUP" : "LINKDOWN");
+                    } else if (linkUp) {
                         pPort->processEvent(LINKUP);
                     } else {
                         pPort->processEvent(LINKDOWN);

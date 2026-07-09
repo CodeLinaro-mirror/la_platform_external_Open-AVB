@@ -66,15 +66,9 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 
 #define QTIMER_RESAMPLING 5
 
-// if emac driver does not support the HWTSTAMP_TX_EXTERNAL_TIME_SRC we revert to old one HWTSTAMP_TX_ON 
-#ifndef HWTSTAMP_TX_EXTERNAL_TIME_SRC
-#define HWTSTAMP_TX_EXTERNAL_TIME_SRC HWTSTAMP_TX_ON
-#endif
-
 char ptp_dev_index[PTP_CLOCK_DEVICE_LENGTH] = {0};
 char ptp_device[] = PTP_DEVICE;
 extern int port_pipe_fds[2];
-
 
 net_result LinuxNetworkInterface::nrecv
 ( LinkLayerAddress *addr, uint8_t *payload, size_t &length )
@@ -154,7 +148,14 @@ net_result LinuxNetworkInterface::nrecv
     msg.msg_namelen = sizeof( remote );
     msg.msg_control = &control;
     msg.msg_controllen = sizeof(control);
-    err = recvmsg( sd_event, &msg, 0 );
+
+    err = recvmsg( sd_event, &msg, MSG_DONTWAIT );
+
+    if ( err == -1 && (errno == EAGAIN || errno == EWOULDBLOCK) ) {
+        GPTP_LOG_DEBUG("recvmsg() EAGAIN/EWOULDBLOCK after select(), returning net_trfail");
+        ret = net_trfail;
+        goto done;
+    }
 
     if ( err < 0 ) {
         if ( errno == ENOMSG ) {
@@ -163,7 +164,7 @@ net_result LinuxNetworkInterface::nrecv
             goto done;
         }
 
-        GPTP_LOG_ERROR("recvmsg() failed: %s", strerror(errno));
+        GPTP_LOG_ERROR("recvmsg failed: %s (errno=%d)", strerror(errno), errno);
         ret = net_fatal;
         goto done;
     }
@@ -589,8 +590,13 @@ bool LinuxTimestamperGeneric::post_init( int ifindex, int sd,
 
     hwconfig.rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
     if(tsc_enable){
+#ifdef TSC_FEATURE
     GPTP_LOG_INFO("TSC used:: HWTSTAMP_TX_EXTERNAL_TIME_SRC hw type set");
     hwconfig.tx_type = HWTSTAMP_TX_EXTERNAL_TIME_SRC;
+#else
+    GPTP_LOG_INFO("HWTSTAMP_TX_ON hw type set (non-GEN5 target)");
+    hwconfig.tx_type = HWTSTAMP_TX_ON;
+#endif
    } else {
     hwconfig.tx_type = HWTSTAMP_TX_ON;
     GPTP_LOG_INFO("HWTSTAMP_TX_ON hw type set");

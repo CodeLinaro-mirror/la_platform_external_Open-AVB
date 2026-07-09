@@ -1267,6 +1267,10 @@ void PTPMessageFollowUp::processMessage( EtherPort *port )
 
     scalar_offset  = TIMESTAMP_TO_NS( sync_arrival );
     scalar_offset -= TIMESTAMP_TO_NS( preciseOriginTimestamp );
+    GPTP_LOG_VERBOSE("sync_arrival: %llu ns, preciseOriginTimestamp: %llu ns, scalar_offset: %lld ns",
+                  (unsigned long long)TIMESTAMP_TO_NS( sync_arrival ),
+                  (unsigned long long)TIMESTAMP_TO_NS( preciseOriginTimestamp ),
+                  (long long)scalar_offset);
 
     //Parameters
     if (port->sct_buffer) {

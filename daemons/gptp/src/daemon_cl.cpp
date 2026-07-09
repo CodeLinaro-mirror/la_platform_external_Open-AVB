@@ -321,12 +321,18 @@ int gptp_sys_suspend(void *data, enum PM_MODE mode)
     bool err = false;
     GPTP_LOG_INFO("Handling LPM(mode: %d) enter notification", mode);
     GPTP_LOG_INFO("stoping gptp daemon....");
-    pPort->gPTP_lpm = true;
-    err = pPort->processEvent(LINKDOWN);
 
-    if (err == false) {
-        GPTP_LOG_ERROR("failed to ds_suspend, roll back and NACK");
-        return -1;
+    if (pPort->gPTP_lpm == false) {
+        pPort->gPTP_lpm = true;
+        err = pPort->processEvent(LINKDOWN);
+
+        if (err == false) {
+            GPTP_LOG_ERROR("failed to ds_suspend, roll back and NACK");
+            pPort->gPTP_lpm = false;
+            return -1;
+        }
+    } else {
+        GPTP_LOG_WARNING("gptp_sys_suspend: already in LPM state, ignoring duplicate suspend");
     }
 
     return 0;
@@ -336,8 +342,14 @@ int gptp_sys_resume(void *data, enum PM_MODE mode)
 {
     GPTP_LOG_INFO("Handling LPM(mode: %d) exit notification", mode);
     GPTP_LOG_INFO("starting gptp daemon....");
-    pPort->gPTP_lpm = false;
-    pPort->processEvent(LINKUP);
+
+    if (pPort->gPTP_lpm == true) {
+        pPort->processEvent(LINKUP);
+        pPort->gPTP_lpm = false;
+    } else {
+        GPTP_LOG_WARNING("gptp_sys_resume: not in LPM state, ignoring duplicate resume");
+    }
+
     return 0;
 }
 
@@ -1108,7 +1120,11 @@ int main(int argc, char **argv)
             portInit.isGM = iniParser.getIsGM();
             portInit.syncClocks = iniParser.getSyncClocks();
             portInit.asCapable = iniParser.getAsCapable();
+#ifndef ANDROID
             portInit.tsc_enable = iniParser.getTscEnable();
+#else
+            portInit.tsc_enable = false;
+#endif
             GPTP_LOG_INFO("syncClocks: %d", portInit.syncClocks);
             GPTP_LOG_INFO("automotive profile %s isGM %s\n",
                           ((portInit.automotive_profile) ? "True" : "False"),

@@ -137,6 +137,11 @@ ifeq ($(GPTP_DSQB_ENABLED),1)
     LDFLAGS_G += -lpm-client
 endif
 
+ifeq ($(TSC_FEATURE),1)
+    CFLAGS_G += -DTSC_FEATURE
+    CPPFLAGS_G += -DTSC_FEATURE
+endif
+
 LDFLAGS_G += -lpthread -lrt
 
 CFLAGS_G += -DLOG_LIMIT
