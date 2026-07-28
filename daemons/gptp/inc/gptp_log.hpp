@@ -44,6 +44,10 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #ifdef GENIVI_DLT
 #include "dlt.h"
 #endif
+#ifdef DLT_AVAILABLE
+#include <dlt/dlt.h>
+#include <unistd.h>
+#endif
 
 #ifdef ANDROID
 #define LOG_TAG "gPTP"
@@ -59,10 +63,25 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #define GPTP_LOG_WARNING_ON         1
 #define GPTP_LOG_INFO_ON            1
 #define GPTP_LOG_STATUS_ON          1
-//#define GPTP_LOG_DEBUG_ON         1
-//#define GPTP_LOG_VERBOSE_ON       1
+#ifdef DLT_AVAILABLE
+#define GPTP_LOG_DEBUG_ON         1
+#define GPTP_LOG_VERBOSE_ON       1
+#endif
 
 #ifndef ANDROID
+#ifdef DLT_AVAILABLE
+
+typedef enum {
+    GPTP_LOG_LVL_CRITICAL = DLT_LOG_FATAL,
+    GPTP_LOG_LVL_ERROR = DLT_LOG_ERROR,
+    GPTP_LOG_LVL_EXCEPTION = DLT_LOG_ERROR,
+    GPTP_LOG_LVL_WARNING = DLT_LOG_WARN,
+    GPTP_LOG_LVL_INFO = DLT_LOG_INFO,
+    GPTP_LOG_LVL_STATUS = DLT_LOG_INFO,
+    GPTP_LOG_LVL_DEBUG = DLT_LOG_DEBUG,
+    GPTP_LOG_LVL_VERBOSE = DLT_LOG_VERBOSE,
+} GPTP_LOG_LEVEL;
+#else
 typedef enum {
     GPTP_LOG_LVL_CRITICAL,
     GPTP_LOG_LVL_ERROR,
@@ -73,7 +92,7 @@ typedef enum {
     GPTP_LOG_LVL_DEBUG,
     GPTP_LOG_LVL_VERBOSE,
 } GPTP_LOG_LEVEL;
-
+#endif //DLT_AVAILABLE
 #else
 
 typedef enum {

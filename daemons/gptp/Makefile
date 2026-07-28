@@ -142,6 +142,28 @@ ifeq ($(TSC_FEATURE),1)
     CPPFLAGS_G += -DTSC_FEATURE
 endif
 
+# Define variables
+DLT_CFLAGS := $(shell pkg-config --cflags automotive-dlt)
+DLT_LDFLAGS := $(shell pkg-config --libs automotive-dlt)
+$(info DLT_CFLAGS: $(DLT_CFLAGS))
+$(info DLT_LDFLAGS: $(DLT_LDFLAGS))
+
+# Define a flag for DLT availability
+DLT_AVAILABLE := 0
+ifneq ($(DLT_CFLAGS),)
+ifneq ($(DLT_LDFLAGS),)
+$(info DLT_CFLAGS: $(DLT_CFLAGS))
+$(info DLT_LDFLAGS: $(DLT_LDFLAGS))
+DLT_AVAILABLE := 1
+CFLAGS_G += -DDLT_AVAILABLE
+CFLAGS_G += $(DLT_CFLAGS)
+CPPFLAGS_G += -DDLT_AVAILABLE
+CPPFLAGS_G += $(DLT_CFLAGS)
+LDFLAGS_G += $(DLT_LDFLAGS)
+$(info CPPFLAGS_G: $(CPPFLAGS_G))
+$(info LDFLAGS_G: $(LDFLAGS_G))
+endif
+endif
 LDFLAGS_G += -lpthread -lrt
 
 CFLAGS_G += -DLOG_LIMIT

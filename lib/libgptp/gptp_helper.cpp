@@ -83,6 +83,7 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #include <atomic>
 #include <limits.h>
 #include <syslog.h>
+#include <string>
 #include <stdarg.h>
 #include <stdio.h>
 #include <dirent.h>
@@ -94,6 +95,11 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #endif
 #else
 #include <syslog.h>
+#endif
+
+#ifdef DLT_AVAILABLE
+#include <dlt/dlt.h>
+#include <unistd.h>
 #endif
 
 #ifdef __cplusplus
@@ -130,19 +136,39 @@ pthread_mutex_t gInitMutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
 #endif
 #define SCT_SHM_SIZE 0x2000
-#ifndef LOG_ERROR
-#define LOG_ERROR    1
-#endif
-#ifndef LOG_WARNING
-#define LOG_WARNING     2
-#endif
-#ifndef LOG_INFO
-#define LOG_INFO     3
-#endif
-#ifndef LOG_DEBUG
-#define LOG_DEBUG    4
-#endif
-#define GPTP_LOG_LEVEL LOG_INFO
+
+#ifdef DLT_AVAILABLE
+
+typedef enum {
+    HELPER_GPTP_LOG_LVL_CRITICAL = DLT_LOG_FATAL,
+    HELPER_GPTP_LOG_LVL_ERROR = DLT_LOG_ERROR,
+    HELPER_GPTP_LOG_LVL_EXCEPTION = DLT_LOG_ERROR,
+    HELPER_GPTP_LOG_LVL_WARNING = DLT_LOG_WARN,
+    HELPER_GPTP_LOG_LVL_INFO = DLT_LOG_INFO,
+    HELPER_GPTP_LOG_LVL_STATUS = DLT_LOG_INFO,
+    HELPER_GPTP_LOG_LVL_DEBUG = DLT_LOG_DEBUG,
+    HELPER_GPTP_LOG_LVL_VERBOSE = DLT_LOG_VERBOSE,
+} HELPER_GPTP_LOG_LEVEL;
+
+#else
+
+typedef enum {
+    HELPER_GPTP_LOG_LVL_CRITICAL,
+    HELPER_GPTP_LOG_LVL_ERROR,
+    HELPER_GPTP_LOG_LVL_EXCEPTION,
+    HELPER_GPTP_LOG_LVL_WARNING,
+    HELPER_GPTP_LOG_LVL_INFO,
+    HELPER_GPTP_LOG_LVL_STATUS,
+    HELPER_GPTP_LOG_LVL_DEBUG,
+    HELPER_GPTP_LOG_LVL_VERBOSE,
+} HELPER_GPTP_LOG_LEVEL;
+
+#endif //DLT_AVAILABLE
+
+
+#define GPTP_LOG_LEVEL HELPER_GPTP_LOG_LVL_INFO
+
+
 #ifdef ANDROID
 
 #define LOGE(fmt, ...) __android_log_print (ANDROID_LOG_ERROR,"libgptp", fmt, __VA_ARGS__)
@@ -158,12 +184,13 @@ enum _LOGGER_SEVERITY {
 };
 
 #endif
+
 #ifndef ANDROID
 
-#define GPTP_LOG_ERROR(fmt, ...) system_log(LOG_ERROR, "[%d:%s:%d] " fmt ,gettid(),  __FUNCTION__, __LINE__,##__VA_ARGS__)
-#define GPTP_LOG_WARNING(fmt, ...) system_log(LOG_WARNING, "[%d:%s:%d] " fmt ,gettid(),  __FUNCTION__, __LINE__,##__VA_ARGS__)
-#define GPTP_LOG_INFO(fmt, ...) system_log(LOG_INFO, "[%d:%s:%d] " fmt ,gettid(),  __FUNCTION__, __LINE__,##__VA_ARGS__)
-#define GPTP_LOG_DEBUG(fmt, ...) system_log(LOG_DEBUG, "[%d:%s:%d] " fmt ,gettid(),  __FUNCTION__, __LINE__,##__VA_ARGS__)
+#define GPTP_LOG_ERROR(fmt, ...) helpergptpLog(HELPER_GPTP_LOG_LVL_ERROR, "ERROR    ", __func__, __LINE__, fmt, ## __VA_ARGS__)
+#define GPTP_LOG_WARNING(fmt, ...) helpergptpLog(HELPER_GPTP_LOG_LVL_WARNING, "WARNING  ", __func__, __LINE__, fmt, ## __VA_ARGS__)
+#define GPTP_LOG_INFO(fmt, ...) helpergptpLog(HELPER_GPTP_LOG_LVL_INFO, "INFO     ", __func__, __LINE__, fmt, ## __VA_ARGS__)
+#define GPTP_LOG_DEBUG(fmt, ...) helpergptpLog(HELPER_GPTP_LOG_LVL_DEBUG, "DEBUG    ", __func__, __LINE__, fmt, ## __VA_ARGS__)
 
 #else
 
@@ -235,6 +262,10 @@ typedef struct {
 static bool bInitialized = false;
 static bool bServiceConnect = false;
 
+#ifdef DLT_AVAILABLE
+static constexpr uint32_t DLT_RESEND_ATEXIT_TIMEOUT = 100;  // 100ms
+#endif
+
 /* Pipe file descriptors for cleanup the loop */
 int pipefd[2];
 fd_set readfds;
@@ -293,15 +324,125 @@ typedef struct {
     syncInterval_t syncInterval;
 } sct_gptp_data;
 
-void system_log(int loglevel, const char *s, ...)
-{
-    va_list arg = {};
+#ifdef DLT_AVAILABLE
+DLT_DECLARE_CONTEXT(dlt_con_helpergptp);
 
-    if (loglevel == LOG_ERROR || loglevel <= GPTP_LOG_LEVEL) {
-        va_start(arg, s);
-        vsyslog(loglevel, s, arg);
-        va_end(arg);
+/**
+* Get current running process path.
+*/
+std::string getCurrentProcessPath()
+{
+    char path[PATH_MAX];
+    ssize_t count        = readlink("/proc/self/exe", path, PATH_MAX);
+    std::string fullPath = std::string(path, (count > 0) ? count : 0);
+    return fullPath;
+}
+
+/**
+* Get current running application name.
+*/
+std::string getCurrentAppName()
+{
+    std::string path = getCurrentProcessPath();
+    auto const pos   = path.find_last_of('/');
+    return path.substr(pos + 1);
+}
+
+std::string getAppId(std::string appIdDesc)
+{
+    std::string appId = "";
+    int size = appIdDesc.length();
+    appId += std::toupper(appIdDesc[0]);
+
+    // Generating the appID for the application. The appID should only be a maximum of 4 characters.
+    // Example- if the app name is location_test_app, our appId should be "lta"
+    // If the app name is xtra-daemon, the appId would be "xd".
+    // However, if 2 apps have the same name like xtra_daemon or xtra-daemon,
+    // the appId would still be xd.
+    for (int itr = 1; itr < size; itr++) {
+        if (((appIdDesc[itr] == '_') || (appIdDesc[itr] == '-'))
+                && ((itr + 1) < size)) {
+            appId += std::toupper(appIdDesc[itr + 1]);
+        }
+
+        if (appId.length() == 4) {
+            return appId;
+        }
     }
+
+    // There are applications like "rild", so appID can be the first 4 characters.
+    if (appId.length() == 1) {
+        int count = 3;
+        int itr   = 1;
+
+        while ((itr < size) && (count > 0)) {
+            appId += std::toupper(appIdDesc[itr]);
+            itr++;
+            count--;
+        }
+    }
+
+    return appId;
+}
+#endif
+
+void helpergptplogRegister(void)
+{
+#ifdef DLT_AVAILABLE
+    // Register application ID
+    char appId[DLT_ID_SIZE + 1];
+    DltReturnValue ret = dlt_get_appid(appId);
+
+    if ((ret != DLT_RETURN_OK) || (strncmp(appId, "SYS", DLT_ID_SIZE) == 0)
+            || (strncmp(appId, "", DLT_ID_SIZE) == 0)) {
+        if (ret == DLT_RETURN_OK) {
+            DLT_UNREGISTER_APP();
+        }
+
+        std::string appIdDesc = getCurrentAppName();
+        std::string appIdStr = getAppId(appIdDesc);
+        DLT_REGISTER_APP(appIdStr.c_str(), "OpenAVB HelpergPTP");
+    } else {
+        syslog(LOG_ERR, "%s Dlt app ID already registered as %s", __FUNCTION__, appId);
+    }
+
+    // Register contexts
+    DLT_REGISTER_CONTEXT(dlt_con_helpergptp, "GNRL", "General Context");
+
+    // Set resend timeout
+    if (0 != dlt_set_resend_timeout_atexit(DLT_RESEND_ATEXIT_TIMEOUT)) {
+        syslog(LOG_ERR, "%s dlt_set_resend_timeout_atexit failed", __FUNCTION__);
+    }
+
+#endif
+}
+
+void helpergptplogUnregister(void)
+{
+#ifdef DLT_AVAILABLE
+    DLT_UNREGISTER_CONTEXT(dlt_con_helpergptp);
+    DLT_UNREGISTER_APP();
+#endif
+}
+
+void helpergptpLog(HELPER_GPTP_LOG_LEVEL level, const char *tag,
+                   const char *path, int line, const char *fmt, ...)
+{
+    char msg[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+#ifdef DLT_AVAILABLE
+    DLT_LOG(dlt_con_helpergptp, (DltLogLevelType)level, DLT_INT(gettid()),
+            DLT_STRING(path), DLT_INT(line), DLT_STRING(msg));
+#else
+
+    if (level == HELPER_GPTP_LOG_LVL_ERROR || level <= GPTP_LOG_LEVEL) {
+        syslog(level, "[%d:%s:%d] %s\n", gettid(), path, line, msg);
+    }
+
+#endif
 }
 
 #ifdef AVB_FEATURE_GVM_MODE
@@ -1957,6 +2098,9 @@ bool isGptpInProxyMode(void)
 /* public API to init gptp time scaling */
 bool gptpInit(void)
 {
+
+    helpergptplogRegister();
+
 #ifdef LE_GVM
     gptp_fd = open("/dev/gptp", O_RDWR);
 
@@ -1995,6 +2139,7 @@ bool gptpDeinit(void)
     UNLOCK();
     gptpDaemonClientDeInit();
 #endif
+    helpergptplogUnregister();
     return true;
 }
 

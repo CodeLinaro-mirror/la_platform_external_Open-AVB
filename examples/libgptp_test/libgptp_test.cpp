@@ -62,24 +62,47 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #include <syslog.h>
 #endif
 
+#ifdef DLT_AVAILABLE
+#include <dlt/dlt.h>
+#include <unistd.h>
+#endif
+
 #define CLOCKFD 3
 #define FD_TO_CLOCKID(fd)   ((~(clockid_t) (fd) << 3) | CLOCKFD)
 #define MAX_RETRY 10000
 #define LOOP_CNT 1
 
-#ifndef LOG_ERROR
-#define LOG_ERROR    1
-#endif
-#ifndef LOG_WARNING
-#define LOG_WARNING     2
-#endif
-#ifndef LOG_INFO
-#define LOG_INFO     3
-#endif
-#ifndef LOG_DEBUG
-#define LOG_DEBUG    4
-#endif
-#define GPTP_LOG_LEVEL LOG_INFO
+#ifdef DLT_AVAILABLE
+
+typedef enum {
+    GPTP_LOG_LVL_CRITICAL = DLT_LOG_FATAL,
+    GPTP_LOG_LVL_ERROR = DLT_LOG_ERROR,
+    GPTP_LOG_LVL_EXCEPTION = DLT_LOG_ERROR,
+    GPTP_LOG_LVL_WARNING = DLT_LOG_WARN,
+    GPTP_LOG_LVL_INFO = DLT_LOG_INFO,
+    GPTP_LOG_LVL_STATUS = DLT_LOG_INFO,
+    GPTP_LOG_LVL_DEBUG = DLT_LOG_DEBUG,
+    GPTP_LOG_LVL_VERBOSE = DLT_LOG_VERBOSE,
+} GPTP_LOG_LEVEL;
+
+#else
+
+typedef enum {
+    GPTP_LOG_LVL_CRITICAL,
+    GPTP_LOG_LVL_ERROR,
+    GPTP_LOG_LVL_EXCEPTION,
+    GPTP_LOG_LVL_WARNING,
+    GPTP_LOG_LVL_INFO,
+    GPTP_LOG_LVL_STATUS,
+    GPTP_LOG_LVL_DEBUG,
+    GPTP_LOG_LVL_VERBOSE,
+} GPTP_LOG_LEVEL;
+
+#endif //DLT_AVAILABLE
+
+
+#define LIB_GPTP_LOG_LEVEL GPTP_LOG_LVL_INFO
+
 #ifdef ANDROID
 
 #define LOGE(fmt, ...) __android_log_print (ANDROID_LOG_ERROR,"libgptp", fmt, __VA_ARGS__); printf(fmt,##__VA_ARGS__)
@@ -95,24 +118,56 @@ enum _LOGGER_SEVERITY {
 };
 
 #endif
+
+
+#ifdef DLT_AVAILABLE
+DLT_DECLARE_CONTEXT(dlt_con_gptp);
+#endif
+
+void libgptplogRegister(void)
+{
+#ifdef DLT_AVAILABLE
+    DLT_REGISTER_APP("LPTP", "OpenAVB libgPTP");
+    DLT_REGISTER_CONTEXT(dlt_con_gptp, "GNRL", "General Context");
+#endif
+}
+
+void libgptplogUnregister(void)
+{
+#ifdef DLT_AVAILABLE
+    DLT_UNREGISTER_CONTEXT(dlt_con_gptp);
+    DLT_UNREGISTER_APP();
+#endif
+}
+
+
 #ifndef ANDROID
 
-#define GPTP_LOG_ERROR(fmt, ...) system_log(LOG_ERROR, "[%d:%s:%d] " fmt ,gettid(),  __FUNCTION__, __LINE__,##__VA_ARGS__); printf(fmt,##__VA_ARGS__)
-#define GPTP_LOG_WARNING(fmt, ...) system_log(LOG_WARNING, "[%d:%s:%d] " fmt ,gettid(),  __FUNCTION__, __LINE__,##__VA_ARGS__); printf(fmt,##__VA_ARGS__)
-#define GPTP_LOG_INFO(fmt, ...) system_log(LOG_INFO, "[%d:%s:%d] " fmt ,gettid(),  __FUNCTION__, __LINE__,##__VA_ARGS__); printf(fmt,##__VA_ARGS__)
-#define GPTP_LOG_DEBUG(fmt, ...) system_log(LOG_DEBUG, "[%d:%s:%d] " fmt ,gettid(),  __FUNCTION__, __LINE__,##__VA_ARGS__); printf(fmt,##__VA_ARGS__)
-
-
-void system_log(int loglevel, const char *s, ...)
+void libgptpLog(GPTP_LOG_LEVEL level, const char *tag, const char *path,
+                int line,
+                const char *fmt, ...)
 {
-    va_list arg = {};
+    char msg[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+#ifdef DLT_AVAILABLE
+    DLT_LOG(dlt_con_gptp, (DltLogLevelType)level, DLT_INT(gettid()),
+            DLT_STRING(path), DLT_INT(line), DLT_STRING(msg));
+#else
 
-    if (loglevel == LOG_ERROR || loglevel <= GPTP_LOG_LEVEL) {
-        va_start(arg, s);
-        vsyslog(loglevel, s, arg);
-        va_end(arg);
+    if (level == GPTP_LOG_LVL_ERROR || level <= LIB_GPTP_LOG_LEVEL) {
+        syslog(level, "[%d:%s:%d] %s\n", gettid(), path, line, msg);
     }
+
+#endif
 }
+
+#define GPTP_LOG_ERROR(fmt, ...) libgptpLog(GPTP_LOG_LVL_ERROR, "ERROR    ", __func__, __LINE__, fmt, ## __VA_ARGS__); printf(fmt,##__VA_ARGS__)
+#define GPTP_LOG_WARNING(fmt, ...) libgptpLog(GPTP_LOG_LVL_WARNING, "WARNING  ", __func__, __LINE__, fmt, ## __VA_ARGS__); printf(fmt,##__VA_ARGS__)
+#define GPTP_LOG_INFO(fmt, ...) libgptpLog(GPTP_LOG_LVL_INFO, "INFO     ", __func__, __LINE__, fmt, ## __VA_ARGS__); printf(fmt,##__VA_ARGS__)
+#define GPTP_LOG_DEBUG(fmt, ...) libgptpLog(GPTP_LOG_LVL_DEBUG, "DEBUG    ", __FILE__, __LINE__, fmt, ## __VA_ARGS__); printf(fmt,##__VA_ARGS__)
 
 
 #else
@@ -760,6 +815,11 @@ int main(int argc, char *argv[])
     gptpTimeInfo_t ptp_data;
     int retry = 0;
     RsyncStatus_t Rsync;
+
+#ifdef DLT_AVAILABLE
+    libgptplogRegister();
+#endif
+
     gptp_scaling_available = gptpInit();
 
     signal(SIGINT, signal_handler);
@@ -943,5 +1003,8 @@ int main(int argc, char *argv[])
         GPTP_LOG_ERROR("GPTP deinit failed\n");
     }
 
+#ifdef DLT_AVAILABLE
+    libgptplogUnregister();
+#endif
     return 0;
 }

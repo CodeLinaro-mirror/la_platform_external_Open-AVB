@@ -151,16 +151,28 @@ static void* powerListenerThread(void* arg) {
     PowerEvent ev;
 
     while (true) {
-        ssize_t n = read(fd, &ev, sizeof(ev));
+        sockaddr_un sender;
+        socklen_t sender_len = sizeof(sender);
+        ssize_t n = recvfrom(fd, &ev, sizeof(ev), 0,
+                             reinterpret_cast<sockaddr*>(&sender), &sender_len);
         if (n < 0) {
             if (errno == EINTR) {
+                GPTP_LOG_WARNING("powerListenerThread: recvfrom EINTR, retrying");
                 continue;
             }
-            GPTP_LOG_ERROR("Power socket read failed: %s", strerror(errno));
+            GPTP_LOG_ERROR("powerListenerThread: recvfrom failed fd=%d: %s",
+                           fd, strerror(errno));
             break;
         }
 
-        if (n != sizeof(ev)) {
+        if (n == 0) {
+            GPTP_LOG_ERROR("powerListenerThread: recvfrom returned 0 fd=%d", fd);
+            break;
+        }
+
+        if (n != (ssize_t)sizeof(ev)) {
+            GPTP_LOG_WARNING("powerListenerThread: short recv %zd of %zu bytes, discarding",
+                             n, sizeof(ev));
             continue;
         }
 
