@@ -24,7 +24,7 @@ gptp_cfg_prebuilt {
 
     soong_config_variables: {
         gen5gvm: {
-            src: "etc/gptp_cfg_au_nord.ini",
+            src: "etc/gptp_cfg_gvm.ini",
         },
         gen4gvm: {
             src: "etc/gptp_cfg.ini",
