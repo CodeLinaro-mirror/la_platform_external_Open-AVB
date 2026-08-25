@@ -44,13 +44,14 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #include <chrono>
 #include <string.h>
 
-#ifdef GENIVI_DLT
+#ifdef DLT_AVAILABLE
 DLT_DECLARE_CONTEXT(dlt_con_gptp);
 #endif
 
 void gptplogRegister(void)
 {
-#ifdef GENIVI_DLT
+#ifdef DLT_AVAILABLE
+
     DLT_REGISTER_APP("GPTP", "OpenAVB gPTP");
     DLT_REGISTER_CONTEXT(dlt_con_gptp, "GNRL", "General Context");
 #endif
@@ -58,7 +59,7 @@ void gptplogRegister(void)
 
 void gptplogUnregister(void)
 {
-#ifdef GENIVI_DLT
+#ifdef DLT_AVAILABLE
     DLT_UNREGISTER_CONTEXT(dlt_con_gptp);
     DLT_UNREGISTER_APP();
 #endif
@@ -69,6 +70,13 @@ void gptplogUnregister(void)
 gptplogcat_t gptplogcat = GPTP_LOG_ON;
 #else
 gptplogcat_t gptplogcat = GPTP_LOG_OFF;
+#endif
+
+// DLT support
+#ifdef DLT_AVAILABLE
+gptplogcat_t gptpdlt = GPTP_LOG_ON;
+#else
+gptplogcat_t gptpdlt = GPTP_LOG_OFF;
 #endif
 
 gptplogcat_t systemlogcat = GPTP_LOG_ON;
@@ -84,12 +92,17 @@ void gptpLog(GPTP_LOG_LEVEL level, const char *tag, const char *path, int line,
     va_list args;
     va_start(args, fmt);
     vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
 #ifdef ANDROID
 
     if (gptplogcat) {
         LOGE(level, "[%s:%d] %s", path, line, msg);
     }
 
+#elif defined(DLT_AVAILABLE)
+    if (gptpdlt) {
+        DLT_LOG(dlt_con_gptp, (DltLogLevelType)level, DLT_INT(gettid()), DLT_STRING(path), DLT_INT(line), DLT_STRING(msg));
+    }
 #else
 
     if (systemlogcat) {
@@ -120,6 +133,7 @@ void gptpLogMs(GPTP_LOG_LEVEL level, const char *tag, const char *path,
     va_list args;
     va_start(args, fmt);
     vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
 #ifdef ANDROID
 
     if (gptplogcat) {

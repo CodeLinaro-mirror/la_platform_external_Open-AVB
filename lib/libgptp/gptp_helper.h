@@ -69,6 +69,11 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 extern "C" {
 #endif
 
+#ifdef DLT_AVAILABLE
+#include <dlt/dlt.h>
+#include <unistd.h>
+#endif
+
 #define CLK_STR "%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x"
 #define CLK_TO_STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5], (a)[6], (a)[7]
 #define PTP_CLOCK_IDENTITY_LENGTH 8 /*!< Size of a clock identifier stored in the ClockIndentity class, described at IEEE 802.1AS-2011 Clause 8.5.2.4*/

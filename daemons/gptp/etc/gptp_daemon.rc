@@ -8,7 +8,7 @@ service gptp_daemon /vendor/bin/qgptp ini -F /vendor/etc/gptp_cfg.ini
     user root
     group root inet log vendor_ptp
     socket gptp_socket stream 0666 root vendor_ptp
-    socket gptp_power_socket stream 0666 root vendor_ptp
+    socket gptp_power_socket dgram 0666 root vendor_ptp
 
 
 service qgptp_powerservice /vendor/bin/qgptp_powerservice

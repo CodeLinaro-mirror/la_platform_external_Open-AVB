@@ -67,9 +67,9 @@ LOCAL_MODULE_PATH := $(TARGET_OUT_VENDOR)/etc
 ifeq ($(TARGET_BOARD_DERIVATIVE_SUFFIX),_cdccomm)
 LOCAL_SRC_FILES := etc/gptp_cfg_au.ini
 else ifeq (gen5_gvm_gy, $(TARGET_BOARD_PLATFORM)$(TARGET_BOARD_SUFFIX))
-LOCAL_SRC_FILES := etc/gptp_cfg_au_nord.ini
+LOCAL_SRC_FILES := etc/gptp_cfg_gvm.ini
 else ifeq (gen5_gvm, $(TARGET_BOARD_PLATFORM)$(TARGET_BOARD_SUFFIX))
-LOCAL_SRC_FILES := etc/gptp_cfg_au_nord.ini
+LOCAL_SRC_FILES := etc/gptp_cfg_gvm.ini
 else
 # Default case: use the module name (gptp_cfg.ini)
 LOCAL_SRC_FILES := etc/$(LOCAL_MODULE)

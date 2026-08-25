@@ -30,7 +30,11 @@ endif
 ifeq ($(ENABLE_GPTP_SERVICE),1)
 	mkdir -p $(DESTDIR)$(sysconfdir)
 	mkdir -p $(DESTDIR)$(systemd_unitdir)
+ifeq ($(TSC_FEATURE),1)
+	install -m 0644 daemons/gptp/etc/gptp_cfg_tsc.ini $(DESTDIR)$(sysconfdir)/gptp_cfg.ini
+else
 	install -m 0644 daemons/gptp/etc/gptp_cfg.ini $(DESTDIR)$(sysconfdir)
+endif
 	install -DpZm 0644 gptp.service $(DESTDIR)$(systemd_unitdir)/system/gptp.service
 	install -DpZm 0644 sleep-notify@gptp.service.d/gptp.conf $(DESTDIR)$(systemd_unitdir)/system/sleep-notify@gptp.service.d/gptp.conf
 endif
