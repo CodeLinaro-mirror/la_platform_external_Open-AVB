@@ -386,6 +386,10 @@ bool LinuxNetworkInterface::getLinkSpeed( int sd, uint32_t *speed )
             *speed = LINKSPEED_2_5G;
             break;
 
+        case SPEED_5000:
+            *speed = LINKSPEED_5G;
+            break;
+
         case SPEED_10000:
             *speed = LINKSPEED_10G;
             break;

@@ -50,6 +50,7 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #include <common_port.hpp>
 
 const uint32_t LINKSPEED_10G =      10000000;
+const uint32_t LINKSPEED_5G =       5000000;
 const uint32_t LINKSPEED_2_5G =     2500000;
 const uint32_t LINKSPEED_1G =       1000000;
 const uint32_t LINKSPEED_100MB =    100000;
