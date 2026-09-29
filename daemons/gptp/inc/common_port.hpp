@@ -344,6 +344,7 @@ typedef struct {
     int64_t offset;
     uint16_t gmTimeBaseIndicator;
     uint32_t d_status;
+    bool tsc_active;
 } gptpStatsType_t;
 
 typedef struct {

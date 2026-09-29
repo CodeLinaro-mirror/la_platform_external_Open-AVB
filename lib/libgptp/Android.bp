@@ -5,3 +5,34 @@ cc_library_headers {
     export_include_dirs: ["."],
     vendor: true,
 }
+cc_library_shared {
+
+    name: "libgptp",
+
+    vendor: true,
+
+    srcs: ["gptp_helper.cpp"],
+
+    cflags: [
+        "-Wno-multichar",
+        "-Werror",
+        "-Wall",
+        "-Wno-unused-parameter",
+        "-DANDROID",
+        "-DSYSTEMD",
+        "-DLOG_LIMIT",
+    ],
+
+    shared_libs: [
+        "libcutils",
+        "liblog",
+    ],
+
+    local_include_dirs: ["."],
+
+    include_dirs: [
+        "external/open-avb/daemons/gptp/inc",
+    ],
+
+    export_include_dirs: ["."],
+}

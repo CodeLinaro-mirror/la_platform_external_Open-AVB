@@ -479,6 +479,33 @@ static void getVirtDevice(char* device_path)
 }
 #endif
 
+#define QTIMER_FREQ_HZ     19200000ULL
+#define QTIMER_TICKS_TO_NS(ticks) (((ticks) * 1000000000ULL) / QTIMER_FREQ_HZ)
+
+static inline uint64_t ptpClockTimeToNs(struct ptp_clock_time ptp_time)
+{
+    return ptp_time.sec * 1000000000LL + ptp_time.nsec;
+}
+
+static inline int64_t ptpClockTimeDiffNs(const struct ptp_clock_time *ptp_time_a,
+                                          const struct ptp_clock_time *ptp_time_b)
+{
+    /* Use signed arithmetic to handle backward clock steps (NTP slew, S2R resume). */
+    return (int64_t)ptpClockTimeToNs(*ptp_time_a) - (int64_t)ptpClockTimeToNs(*ptp_time_b);
+}
+
+static inline uint64_t extractQtimerTicks(const struct ptp_clock_time *ptp_time)
+{
+    return ((uint64_t)ptp_time->sec << 32) | (uint64_t)ptp_time->nsec;
+}
+
+/* Extract QTimer nanoseconds from ptp_clock_time (sec=upper32, nsec=lower32 of QTimer ticks).
+ * This is a TSC team agreement, not a standard PTP usage. */
+static inline uint64_t extractQtimerNs(const struct ptp_clock_time *ptp_time)
+{
+    return QTIMER_TICKS_TO_NS(extractQtimerTicks(ptp_time));
+}
+
 static int gptpClkInit(int *gptp_phc_fd)
 {
 #ifdef AVB_FEATURE_GVM_MODE
@@ -1918,6 +1945,21 @@ bool gptpGetPDelayMeasurementData(pDelayMeasurementData_t *delayData)
     return ret;
 }
 
+static bool gptpIsTscActive(void)
+{
+#ifdef TSC_FEATURE
+    if (gPtpMmap == NULL)
+        return false;
+    gPtpTimeData *td = (gPtpTimeData *)(gPtpMmap + sizeof(pthread_mutex_t));
+    bool active = td->tsc_active;
+    GPTP_LOG_INFO("gptpIsTscActive: tsc_active=%d — %s\n",
+                  active, active ? "using ETU path" : "using fallback path");
+    return active;
+#else
+    return false;
+#endif /* TSC_FEATURE */
+}
+
 bool getgPTPStatus(gptpStatsType_t *status)
 {
     int ret = false;
@@ -1949,6 +1991,8 @@ bool getgPTPStatus(gptpStatsType_t *status)
     memcpy(status, &data->status,
            sizeof(gptpStatsType_t));
     pthread_mutex_unlock((pthread_mutex_t *) &data->lock);
+    /* Set tsc_active after memcpy to prevent overwrite by SCT shared memory copy */
+    status->tsc_active = gptpIsTscActive();
     ret = true;
 #ifdef LIBGPTP_DEBUG
     GPTP_LOG_INFO("qgptp Status Data: gptp_status %d rate_deviation %f IsMaster %d offset %"PRIu64" ",
@@ -2140,6 +2184,84 @@ bool gptpDeinit(void)
     gptpDaemonClientDeInit();
 #endif
     helpergptplogUnregister();
+    return true;
+}
+
+bool gptpGetEtuTimestamps(uint8_t etu_index, uint64_t *avtp_time_ns,
+                          uint64_t *qtimer_time_ns)
+{
+    if (!avtp_time_ns || !qtimer_time_ns)
+        return false;
+
+#ifdef TSC_FEATURE
+    if (gptpIsTscActive()) {
+        struct ptp_extts_request extts_request;
+        struct ptp_extts_event ptp_event;
+        struct ptp_extts_event qtime_event;
+        int cnt;
+
+        memset(&extts_request, 0, sizeof(extts_request));
+        extts_request.index = etu_index;
+        extts_request.flags = PTP_ENABLE_FEATURE;
+
+        if (ioctl(gptpPhcFd, PTP_EXTTS_REQUEST, &extts_request) == 0) {
+            cnt = read(gptpPhcFd, &ptp_event, sizeof(ptp_event));
+            if (cnt == (int)sizeof(ptp_event)) {
+                cnt = read(gptpPhcFd, &qtime_event, sizeof(qtime_event));
+                if (cnt == (int)sizeof(qtime_event)) {
+                    *avtp_time_ns   = ptpClockTimeToNs(ptp_event.t);
+                    *qtimer_time_ns = extractQtimerNs(&qtime_event.t);
+                    return true;
+                }
+                GPTP_LOG_ERROR("gptpGetEtuTimestamps: read QTimer event failed\n");
+            } else {
+                GPTP_LOG_ERROR("gptpGetEtuTimestamps: read AVTP event failed\n");
+            }
+        } else {
+            GPTP_LOG_ERROR("gptpGetEtuTimestamps: ioctl PTP_EXTTS_REQUEST failed\n");
+        }
+        GPTP_LOG_WARNING("gptpGetEtuTimestamps: ETU failed, falling back to PTP_SYS_OFFSET\n");
+    }  /* if (gptpIsTscActive()) */
+#endif /* TSC_FEATURE */
+
+    /* Fallback path (non-TSC always; TSC when inactive or ETU ioctl/read fails):
+     * use PTP_SYS_OFFSET for AVTP time and cntvct_el0 for QTimer. */
+    struct ptp_sys_offset offset;
+    struct ptp_clock_time *pct;
+    struct ptp_clock_time *dev_best = NULL;
+    int64_t interval = LLONG_MAX;
+    unsigned i;
+    uint64_t qticks = 0, qfreq = 0;
+
+    memset(&offset, 0, sizeof(offset));
+    offset.n_samples = PTP_MAX_SAMPLES;
+
+    if (ioctl(gptpPhcFd, PTP_SYS_OFFSET, &offset) == -1) {
+        GPTP_LOG_ERROR("gptpGetEtuTimestamps: PTP_SYS_OFFSET fallback failed\n");
+        return false;
+    }
+
+    pct = &offset.ts[0];
+    for (i = 0; i < offset.n_samples; ++i) {
+        int64_t t = ptpClockTimeDiffNs(pct + 2*i + 2, pct + 2*i);
+        if (t < interval) {
+            dev_best = pct + 2*i + 1;
+            interval = t;
+        }
+    }
+    if (!dev_best)
+        return false;
+
+    *avtp_time_ns = ptpClockTimeToNs(*dev_best);
+
+#if __aarch64__
+    asm volatile("mrs %0, cntvct_el0" : "=r"(qticks));
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(qfreq));
+#else
+    asm volatile("mrrc p15, 1, %Q0, %R0, c14" : "=r"(qticks));
+    qfreq = 19200000ULL;
+#endif
+    *qtimer_time_ns = (qfreq > 0) ? QTIMER_TICKS_TO_NS(qticks) : 0;
     return true;
 }
 

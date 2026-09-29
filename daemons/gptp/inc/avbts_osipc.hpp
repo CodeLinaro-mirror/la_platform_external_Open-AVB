@@ -73,7 +73,8 @@ class OS_IPC
                             int8_t reverseSyncEnabled = 0,
                             int8_t reverseSyncDomain = 1,
                             double reverseSyncRate = RSYNC_RATE_DEFAULT,
-                            bool waitForSync = 0 ) = 0;
+                            bool waitForSync = 0,
+                            bool tsc_enable = false ) = 0;
 
         /**
          * @brief  Updates IPC values

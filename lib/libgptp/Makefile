@@ -16,6 +16,10 @@ endif
 ifeq ($(RGPTP_CLNT_ENABLED),1)
 	CPPFLAGS += -DRGPTP_CLNT_ENABLED
 endif
+ifeq ($(TSC_FEATURE),1)
+	CFLAGS += -DTSC_FEATURE
+	CPPFLAGS += -DTSC_FEATURE
+endif
 LDFLAGS+= -shared -lrt -lpthread
 
 ifeq ($(AVB_FEATURE_GVM_MODE),1)

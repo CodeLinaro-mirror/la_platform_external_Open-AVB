@@ -152,7 +152,11 @@ net_result LinuxNetworkInterface::nrecv
     err = recvmsg( sd_event, &msg, MSG_DONTWAIT );
 
     if ( err == -1 && (errno == EAGAIN || errno == EWOULDBLOCK) ) {
-        GPTP_LOG_DEBUG("recvmsg() EAGAIN/EWOULDBLOCK after select(), returning net_trfail");
+        struct msghdr drain_msg = {};
+        if ( recvmsg( sd_event, &drain_msg, MSG_ERRQUEUE | MSG_DONTWAIT ) >= 0 ) {
+            GPTP_LOG_ERROR( "Orphaned TX timestamp drained from error queue - "
+                            "NIC interrupt delayed >63ms by high CPU load." );
+        }
         ret = net_trfail;
         goto done;
     }

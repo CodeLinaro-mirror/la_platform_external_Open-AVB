@@ -129,6 +129,7 @@ typedef struct {
     int64_t offset;
     uint16_t gmTimeBaseIndicator;
     uint32_t d_status;
+    bool tsc_active;
 } gptpStatsType_t;
 
 typedef struct {
@@ -137,9 +138,9 @@ typedef struct {
 } syncInterval_t;
 
 typedef struct {
-    int8_t reverseSyncEnabled = 0;
-    int8_t reverseSyncDomain = 0;
-    double reverseSyncRate = 0;
+    int8_t reverseSyncEnabled;
+    int8_t reverseSyncDomain;
+    double reverseSyncRate;
 } RsyncStatus_t;
 
 struct gptp_update {
@@ -241,6 +242,14 @@ int getTimeError(int64_t *timeError);
 bool gptpInit(void);
 
 bool gptpDeinit(void);
+
+bool isGptpInProxyMode(void);
+
+/* Get ETU AVTP and QTimer timestamps using the PHC device.
+   etu_index: PTP channel slice to use (0-31).
+   Returns false on ioctl or read failure. */
+bool gptpGetEtuTimestamps(uint8_t etu_index, uint64_t *avtp_time_ns,
+                          uint64_t *qtimer_time_ns);
 
 #ifdef  RGPTP_CLNT_ENABLED
 /* Get current rptp time in nanoseconds */

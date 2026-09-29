@@ -50,5 +50,8 @@ LOCAL_MODULE:= libgptp
 
 LOCAL_MODULE_PATH_64 := $(TARGET_OUT_VENDOR)/lib64
 
+ifneq ($(wildcard $(LOCAL_PATH)/Android.bp),)
+else
 include $(BUILD_SHARED_LIBRARY)
+endif
 

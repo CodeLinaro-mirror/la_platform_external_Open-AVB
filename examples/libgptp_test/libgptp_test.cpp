@@ -619,6 +619,13 @@ void get_gptp_time(int p_loop_cnt)
 
 void get_gptp_tsc_time(int p_loop_cnt)
 {
+    gptpStatsType_t gptp_stat = {0};
+    getgPTPStatus(&gptp_stat);
+    if (!gptp_stat.tsc_active) {
+        GPTP_LOG_INFO("TSC not enabled in gptp daemon config, skipping TSC time test\n");
+        return;
+    }
+
     struct timespec ts;
     static clockid_t gTscClockid = -1;
     uint64_t curr_gptp_time;

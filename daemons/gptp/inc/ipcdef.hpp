@@ -130,6 +130,7 @@ typedef struct {
     //daemon status
     int64_t d_status = {0};
     EtherPortLinkState_t etherPortLinkState;    //!< EtherPort Link state. It can assume values defined at ::EtherPortLinkState_t
+    bool tsc_active;    //!< true = TSC enabled in gptp daemon config (tscEnabled=1 in gptp_cfg.ini)
 } gPtpTimeData;
 
 /*
