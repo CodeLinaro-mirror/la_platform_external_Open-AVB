@@ -49,6 +49,8 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 
 #include <stdint.h>
 
+#include <stdlib.h>
+
 #include <string.h>
 
 #include <stdio.h>
