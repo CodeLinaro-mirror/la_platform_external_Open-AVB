@@ -62,9 +62,14 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #include <syslog.h>
 #endif
 
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
 #include <dlt/dlt.h>
 #include <unistd.h>
+#endif
+
+#ifdef USE_CLOG
+#include "clog.h"
+#include "clog_ids.h"
 #endif
 
 #define CLOCKFD 3
@@ -72,7 +77,7 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #define MAX_RETRY 10000
 #define LOOP_CNT 1
 
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
 
 typedef enum {
     GPTP_LOG_LVL_CRITICAL = DLT_LOG_FATAL,
@@ -83,6 +88,19 @@ typedef enum {
     GPTP_LOG_LVL_STATUS = DLT_LOG_INFO,
     GPTP_LOG_LVL_DEBUG = DLT_LOG_DEBUG,
     GPTP_LOG_LVL_VERBOSE = DLT_LOG_VERBOSE,
+} GPTP_LOG_LEVEL;
+
+#elif defined(USE_CLOG)
+
+typedef enum {
+    GPTP_LOG_LVL_CRITICAL = CLOG_LEVEL_FATAL,
+    GPTP_LOG_LVL_ERROR = CLOG_LEVEL_ERROR,
+    GPTP_LOG_LVL_EXCEPTION = CLOG_LEVEL_ERROR,
+    GPTP_LOG_LVL_WARNING = CLOG_LEVEL_WARN,
+    GPTP_LOG_LVL_INFO = CLOG_LEVEL_INFO,
+    GPTP_LOG_LVL_STATUS = CLOG_LEVEL_INFO,
+    GPTP_LOG_LVL_DEBUG = CLOG_LEVEL_DEBUG,
+    GPTP_LOG_LVL_VERBOSE = CLOG_LEVEL_VERBOSE,
 } GPTP_LOG_LEVEL;
 
 #else
@@ -98,7 +116,7 @@ typedef enum {
     GPTP_LOG_LVL_VERBOSE,
 } GPTP_LOG_LEVEL;
 
-#endif //DLT_AVAILABLE
+#endif /* USE_DLT / USE_CLOG */
 
 
 #define LIB_GPTP_LOG_LEVEL GPTP_LOG_LVL_INFO
@@ -120,23 +138,66 @@ enum _LOGGER_SEVERITY {
 #endif
 
 
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
 DLT_DECLARE_CONTEXT(dlt_con_gptp);
 #endif
 
+/* =========================================================================
+ * CLOG (Common Log) support
+ * =========================================================================
+ * When USE_CLOG is defined, logging is routed through CLOG_LOG() using
+ * CLOG_APP_LPTP application ID and CLOG_ACTX_LPTP_GPTP context.
+ * Registration is done explicitly in libgptplogRegister().
+ * ========================================================================= */
+#ifdef USE_CLOG
+static clog_context_t clog_con_libgptp = NULL;
+static bool libgptp_clog_app_registered = false;
+static bool libgptp_clog_context_registered = false;
+#endif /* USE_CLOG */
+
 void libgptplogRegister(void)
 {
-#ifdef DLT_AVAILABLE
-    DLT_REGISTER_APP("LPTP", "OpenAVB libgPTP");
-    DLT_REGISTER_CONTEXT(dlt_con_gptp, "GNRL", "General Context");
+#ifdef USE_DLT
+    DLT_REGISTER_APP("LPTP", "libgptp test application");
+    DLT_REGISTER_CONTEXT(dlt_con_gptp, "GPTP", "libgptp test application");
+#elif defined(USE_CLOG)
+    if (!libgptp_clog_app_registered && !libgptp_clog_context_registered) {
+        clog_return_t clog_ret;
+        clog_ret = CLOG_REGISTER_APP(CLOG_APP_LPTP, "LPTP", "libgptp test application");
+        if (clog_ret != CLOG_RETURN_OK) {
+            syslog(LOG_ERR, "libgptp_test: CLOG_REGISTER_APP failed %d, using syslog\n", clog_ret);
+        } else {
+            libgptp_clog_app_registered = true;
+            clog_con_libgptp = CLOG_REGISTER_CONTEXT(CLOG_ACTX_LPTP_GPTP, "GPTP",
+                    "libgptp test application",
+                    CLOG_DIAG_SSID_NOT_AVAILABLE, "GPTP", "GPTP");
+            if (clog_con_libgptp == NULL) {
+                syslog(LOG_ERR, "libgptp_test: CLOG_REGISTER_CONTEXT failed, using syslog\n");
+                (void)CLOG_UNREGISTER_APP();
+                libgptp_clog_app_registered = false;
+            } else {
+                libgptp_clog_context_registered = true;
+            }
+        }
+    }
 #endif
 }
 
 void libgptplogUnregister(void)
 {
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
     DLT_UNREGISTER_CONTEXT(dlt_con_gptp);
     DLT_UNREGISTER_APP();
+#elif defined(USE_CLOG)
+    if (libgptp_clog_context_registered) {
+        (void)CLOG_UNREGISTER_CONTEXT(clog_con_libgptp);
+        clog_con_libgptp = NULL;
+        libgptp_clog_context_registered = false;
+    }
+    if (libgptp_clog_app_registered) {
+        (void)CLOG_UNREGISTER_APP();
+        libgptp_clog_app_registered = false;
+    }
 #endif
 }
 
@@ -152,9 +213,16 @@ void libgptpLog(GPTP_LOG_LEVEL level, const char *tag, const char *path,
     va_start(args, fmt);
     vsnprintf(msg, sizeof(msg), fmt, args);
     va_end(args);
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
     DLT_LOG(dlt_con_gptp, (DltLogLevelType)level, DLT_INT(gettid()),
             DLT_STRING(path), DLT_INT(line), DLT_STRING(msg));
+#elif defined(USE_CLOG)
+    if (libgptp_clog_context_registered) {
+        (void)CLOG_LOG(clog_con_libgptp, (clog_level_t)level,
+                       "[%d:%s:%d] %s", gettid(), path, line, msg);
+    } else if (level == GPTP_LOG_LVL_ERROR || level <= LIB_GPTP_LOG_LEVEL) {
+        syslog(LOG_ERR, "[%d:%s:%d] %s\n", gettid(), path, line, msg);
+    }
 #else
 
     if (level == GPTP_LOG_LVL_ERROR || level <= LIB_GPTP_LOG_LEVEL) {
@@ -619,6 +687,13 @@ void get_gptp_time(int p_loop_cnt)
 
 void get_gptp_tsc_time(int p_loop_cnt)
 {
+    gptpStatsType_t gptp_stat = {0};
+    getgPTPStatus(&gptp_stat);
+    if (!gptp_stat.tsc_active) {
+        GPTP_LOG_INFO("TSC not enabled in gptp daemon config, skipping TSC time test\n");
+        return;
+    }
+
     struct timespec ts;
     static clockid_t gTscClockid = -1;
     uint64_t curr_gptp_time;
@@ -814,9 +889,9 @@ int main(int argc, char *argv[])
     uint64_t test_gptp_time = 0;
     gptpTimeInfo_t ptp_data;
     int retry = 0;
-    RsyncStatus_t Rsync;
+    RsyncStatus_t Rsync = {0};
 
-#ifdef DLT_AVAILABLE
+#if defined(USE_DLT) || defined(USE_CLOG)
     libgptplogRegister();
 #endif
 
@@ -1003,7 +1078,7 @@ int main(int argc, char *argv[])
         GPTP_LOG_ERROR("GPTP deinit failed\n");
     }
 
-#ifdef DLT_AVAILABLE
+#if defined(USE_DLT) || defined(USE_CLOG)
     libgptplogUnregister();
 #endif
     return 0;

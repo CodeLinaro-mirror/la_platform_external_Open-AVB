@@ -1068,6 +1068,30 @@ bool EtherPort::_processEvent( Event e )
         break;
 
         case POWERDOWN:
+            if (linkstatus) {
+                linkstatus = false;
+                if (port_pipe_fds[1] != -1) {
+                    char data = '1';
+                    ssize_t bytes_written = write(port_pipe_fds[1], &data, 1);
+                    if (bytes_written != 1) {
+                        GPTP_LOG_ERROR("Failed to write to pipe on POWERDOWN: %s", strerror(errno));
+                    }
+                }
+                OSThreadExitCode exit_code = osthread_ok;
+                if (!linkjoin(exit_code)) {
+                    GPTP_LOG_ERROR("Failed to join openPort thread on POWERDOWN");
+                } else {
+                    GPTP_LOG_INFO("openPort thread joined on POWERDOWN");
+                    if (port_pipe_fds[0] != -1) {
+                        close(port_pipe_fds[0]);
+                        port_pipe_fds[0] = -1;
+                    }
+                    if (port_pipe_fds[1] != -1) {
+                        close(port_pipe_fds[1]);
+                        port_pipe_fds[1] = -1;
+                    }
+                }
+            }
             //to ensure no processing happens for already expired events
             stopPDelay();
             setAsCapable(false);

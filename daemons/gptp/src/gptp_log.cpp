@@ -44,24 +44,68 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #include <chrono>
 #include <string.h>
 
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
 DLT_DECLARE_CONTEXT(dlt_con_gptp);
 #endif
 
+/* =========================================================================
+ * CLOG (Common Log) support
+ * =========================================================================
+ * When USE_CLOG is defined, logging is routed through CLOG_LOG() using
+ * CLOG_APP_GPTP application ID and CLOG_ACTX_GPTP_GNRL context.
+ *
+ * Registration is done explicitly in gptplogRegister() and
+ * unregistration in gptplogUnregister().
+ * ========================================================================= */
+#ifdef USE_CLOG
+static clog_context_t clog_con_gptp = NULL;
+static bool clog_app_registered = false;
+static bool clog_context_registered = false;
+#endif /* USE_CLOG */
+
 void gptplogRegister(void)
 {
-#ifdef DLT_AVAILABLE
-
-    DLT_REGISTER_APP("GPTP", "OpenAVB gPTP");
-    DLT_REGISTER_CONTEXT(dlt_con_gptp, "GNRL", "General Context");
+#ifdef USE_DLT
+    DLT_REGISTER_APP("GPTP", "OpenAVB gPTP Daemon");
+    DLT_REGISTER_CONTEXT(dlt_con_gptp, "GPTP", "OpenAVB gPTP Daemon");
+#elif defined(USE_CLOG)
+    if (!clog_app_registered && !clog_context_registered) {
+        clog_return_t clog_ret;
+        clog_ret = CLOG_REGISTER_APP(CLOG_APP_GPTP, "GPTP", "OpenAVB gPTP Daemon");
+        if (clog_ret != CLOG_RETURN_OK) {
+            syslog(LOG_ERR, "gptp: CLOG_REGISTER_APP failed %d, using syslog\n", clog_ret);
+        } else {
+            clog_app_registered = true;
+            clog_con_gptp = CLOG_REGISTER_CONTEXT(CLOG_ACTX_GPTP_GPTP, "GPTP",
+                    "OpenAVB gPTP Daemon",
+                    CLOG_DIAG_SSID_NOT_AVAILABLE, "GPTP", "GPTP");
+            if (clog_con_gptp == NULL) {
+                syslog(LOG_ERR, "gptp: CLOG_REGISTER_CONTEXT failed, using syslog\n");
+                (void)CLOG_UNREGISTER_APP();
+                clog_app_registered = false;
+            } else {
+                clog_context_registered = true;
+            }
+        }
+    }
 #endif
 }
 
 void gptplogUnregister(void)
 {
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
     DLT_UNREGISTER_CONTEXT(dlt_con_gptp);
     DLT_UNREGISTER_APP();
+#elif defined(USE_CLOG)
+    if (clog_context_registered) {
+        (void)CLOG_UNREGISTER_CONTEXT(clog_con_gptp);
+        clog_con_gptp = NULL;
+        clog_context_registered = false;
+    }
+    if (clog_app_registered) {
+        (void)CLOG_UNREGISTER_APP();
+        clog_app_registered = false;
+    }
 #endif
 }
 
@@ -73,7 +117,7 @@ gptplogcat_t gptplogcat = GPTP_LOG_OFF;
 #endif
 
 // DLT support
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
 gptplogcat_t gptpdlt = GPTP_LOG_ON;
 #else
 gptplogcat_t gptpdlt = GPTP_LOG_OFF;
@@ -99,14 +143,21 @@ void gptpLog(GPTP_LOG_LEVEL level, const char *tag, const char *path, int line,
         LOGE(level, "[%s:%d] %s", path, line, msg);
     }
 
-#elif defined(DLT_AVAILABLE)
+#elif defined(USE_DLT)
     if (gptpdlt) {
-        DLT_LOG(dlt_con_gptp, (DltLogLevelType)level, DLT_INT(gettid()), DLT_STRING(path), DLT_INT(line), DLT_STRING(msg));
+        DLT_LOG(dlt_con_gptp, (DltLogLevelType)level, DLT_INT((int32_t)gettid()), DLT_STRING(path), DLT_INT(line), DLT_STRING(msg));
+    }
+#elif defined(USE_CLOG)
+    if (clog_context_registered) {
+        (void)CLOG_LOG(clog_con_gptp, (clog_level_t)level,
+                       "[GPTP] [%ld:%s:%d] %s", (long)gettid(), path, line, msg);
+    } else if (systemlogcat) {
+        syslog(LOG_ERR, "[GPTP] [%ld:%s:%d] %s\n", (long)gettid(), path, line, msg);
     }
 #else
 
     if (systemlogcat) {
-        syslog(level, "[%ld:%s:%d] %s\n", gettid(), path, line, msg);
+        syslog(level, "[%ld:%s:%d] %s\n", (long)gettid(), path, line, msg);
     }
 
 #endif
@@ -120,8 +171,8 @@ void gptpLog(GPTP_LOG_LEVEL level, const char *tag, const char *path, int line,
         long int millis = (long int)
                           std::chrono::duration_cast<std::chrono::milliseconds>(roundNow).count();
         fprintf(stderr, "%s:GPTP:[%2.2d:%2.2d:%2.2d:%3.3ld] [%ld:%s:%d] %s\n",
-                tag, tmNow.tm_hour, tmNow.tm_min, tmNow.tm_sec, millis, gettid(), path, line,
-                msg);
+                tag, tmNow.tm_hour, tmNow.tm_min, tmNow.tm_sec, millis,
+                (long)gettid(), path, line, msg);
     }
 }
 
@@ -152,7 +203,8 @@ void gptpLogMs(GPTP_LOG_LEVEL level, const char *tag, const char *path,
         long int millis = (long int)
                           std::chrono::duration_cast<std::chrono::milliseconds>(roundNow).count();
         syslog(level, "[%2.2d:%2.2d:%2.2d:%3.3ld] [%ld:%s:%d] %s\n", tag,
-               tmNow.tm_hour, tmNow.tm_min, tmNow.tm_sec, millis, gettid(), path, line, msg);
+               tmNow.tm_hour, tmNow.tm_min, tmNow.tm_sec, millis,
+               (long)gettid(), path, line, msg);
     }
 
 #endif
@@ -166,8 +218,8 @@ void gptpLogMs(GPTP_LOG_LEVEL level, const char *tag, const char *path,
         long int millis = (long int)
                           std::chrono::duration_cast<std::chrono::milliseconds>(roundNow).count();
         fprintf(stderr, "%s:GPTP:[%2.2d:%2.2d:%2.2d:%3.3ld] [%ld:%s:%d] %s\n",
-                tag, tmNow.tm_hour, tmNow.tm_min, tmNow.tm_sec, millis, gettid(), path, line,
-                msg);
+                tag, tmNow.tm_hour, tmNow.tm_min, tmNow.tm_sec, millis,
+                (long)gettid(), path, line, msg);
     }
 }
 

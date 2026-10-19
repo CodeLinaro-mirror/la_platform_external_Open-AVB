@@ -97,7 +97,10 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #include <syslog.h>
 #endif
 
-#ifdef DLT_AVAILABLE
+#ifdef USE_CLOG
+#include "clog.h"
+#include "clog_ids.h"
+#elif defined(USE_DLT)
 #include <dlt/dlt.h>
 #include <unistd.h>
 #endif
@@ -137,7 +140,7 @@ pthread_mutex_t gInitMutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
 #define SCT_SHM_SIZE 0x2000
 
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
 
 typedef enum {
     HELPER_GPTP_LOG_LVL_CRITICAL = DLT_LOG_FATAL,
@@ -148,6 +151,19 @@ typedef enum {
     HELPER_GPTP_LOG_LVL_STATUS = DLT_LOG_INFO,
     HELPER_GPTP_LOG_LVL_DEBUG = DLT_LOG_DEBUG,
     HELPER_GPTP_LOG_LVL_VERBOSE = DLT_LOG_VERBOSE,
+} HELPER_GPTP_LOG_LEVEL;
+
+#elif defined(USE_CLOG)
+
+typedef enum {
+    HELPER_GPTP_LOG_LVL_CRITICAL = CLOG_LEVEL_FATAL,
+    HELPER_GPTP_LOG_LVL_ERROR = CLOG_LEVEL_ERROR,
+    HELPER_GPTP_LOG_LVL_EXCEPTION = CLOG_LEVEL_ERROR,
+    HELPER_GPTP_LOG_LVL_WARNING = CLOG_LEVEL_WARN,
+    HELPER_GPTP_LOG_LVL_INFO = CLOG_LEVEL_INFO,
+    HELPER_GPTP_LOG_LVL_STATUS = CLOG_LEVEL_INFO,
+    HELPER_GPTP_LOG_LVL_DEBUG = CLOG_LEVEL_DEBUG,
+    HELPER_GPTP_LOG_LVL_VERBOSE = CLOG_LEVEL_VERBOSE,
 } HELPER_GPTP_LOG_LEVEL;
 
 #else
@@ -163,7 +179,7 @@ typedef enum {
     HELPER_GPTP_LOG_LVL_VERBOSE,
 } HELPER_GPTP_LOG_LEVEL;
 
-#endif //DLT_AVAILABLE
+#endif /* USE_DLT / USE_CLOG */
 
 
 #define GPTP_LOG_LEVEL HELPER_GPTP_LOG_LVL_INFO
@@ -262,7 +278,7 @@ typedef struct {
 static bool bInitialized = false;
 static bool bServiceConnect = false;
 
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
 static constexpr uint32_t DLT_RESEND_ATEXIT_TIMEOUT = 100;  // 100ms
 #endif
 
@@ -324,13 +340,13 @@ typedef struct {
     syncInterval_t syncInterval;
 } sct_gptp_data;
 
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
 DLT_DECLARE_CONTEXT(dlt_con_helpergptp);
 
 /**
 * Get current running process path.
 */
-std::string getCurrentProcessPath()
+static std::string getCurrentProcessPath()
 {
     char path[PATH_MAX];
     ssize_t count        = readlink("/proc/self/exe", path, PATH_MAX);
@@ -341,14 +357,14 @@ std::string getCurrentProcessPath()
 /**
 * Get current running application name.
 */
-std::string getCurrentAppName()
+static std::string getCurrentAppName()
 {
     std::string path = getCurrentProcessPath();
     auto const pos   = path.find_last_of('/');
     return path.substr(pos + 1);
 }
 
-std::string getAppId(std::string appIdDesc)
+static std::string getAppId(std::string appIdDesc)
 {
     std::string appId = "";
     int size = appIdDesc.length();
@@ -386,9 +402,21 @@ std::string getAppId(std::string appIdDesc)
 }
 #endif
 
+/* =========================================================================
+ * CLOG (Common Log) support for libgptp (library pattern)
+ * =========================================================================
+ * Libraries use CLOG_REGISTER_LIBRARY() + CLOG_LCTX_* (not CLOG_REGISTER_APP).
+ * Registration is done in helpergptplogRegister() and unregistration in
+ * helpergptplogUnregister(), keeping the same pattern as DLT.
+ * ========================================================================= */
+#ifdef USE_CLOG
+static clog_context_t clog_con_helpergptp    = NULL;
+static int g_gptp_clog_context_registered    = 0;
+#endif /* USE_CLOG */
+
 void helpergptplogRegister(void)
 {
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
     // Register application ID
     char appId[DLT_ID_SIZE + 1];
     DltReturnValue ret = dlt_get_appid(appId);
@@ -403,25 +431,53 @@ void helpergptplogRegister(void)
         std::string appIdStr = getAppId(appIdDesc);
         DLT_REGISTER_APP(appIdStr.c_str(), "OpenAVB HelpergPTP");
     } else {
-        syslog(LOG_ERR, "%s Dlt app ID already registered as %s", __FUNCTION__, appId);
+        syslog(LOG_DEBUG, "%s Dlt app ID already registered as %s", __FUNCTION__, appId);
     }
 
     // Register contexts
-    DLT_REGISTER_CONTEXT(dlt_con_helpergptp, "GNRL", "General Context");
+    DLT_REGISTER_CONTEXT(dlt_con_helpergptp, "GPTP", "General Context");
 
     // Set resend timeout
     if (0 != dlt_set_resend_timeout_atexit(DLT_RESEND_ATEXIT_TIMEOUT)) {
         syslog(LOG_ERR, "%s dlt_set_resend_timeout_atexit failed", __FUNCTION__);
     }
 
+#elif defined(USE_CLOG)
+    /* gptp_clog_init: registers libgptp with CLOG (library pattern).
+     * Called from helpergptplogRegister() which is invoked by gptpInit(). */
+    if (!g_gptp_clog_context_registered) {
+        if (CLOG_REGISTER_LIBRARY() != CLOG_RETURN_OK) {
+            syslog(LOG_ERR, "gptp_helper: CLOG_REGISTER_LIBRARY failed, using syslog\n");
+            return;
+        }
+
+        clog_con_helpergptp = CLOG_REGISTER_CONTEXT(CLOG_LCTX_GPTP, "GPTP",
+                "gPTP helper library logging context",
+                CLOG_DIAG_SSID_NOT_AVAILABLE, "GPTP", "GPTP");
+        g_gptp_clog_context_registered = (clog_con_helpergptp != NULL);
+
+        if (!g_gptp_clog_context_registered) {
+            syslog(LOG_ERR, "gptp_helper: CLOG_REGISTER_CONTEXT failed, using syslog\n");
+            (void)CLOG_UNREGISTER_LIBRARY();
+        }
+    }
 #endif
 }
 
 void helpergptplogUnregister(void)
 {
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
     DLT_UNREGISTER_CONTEXT(dlt_con_helpergptp);
     DLT_UNREGISTER_APP();
+#elif defined(USE_CLOG)
+    /* gptp_clog_deinit: de-registers libgptp from CLOG.
+     * Called from helpergptplogUnregister() which is invoked by gptpDeinit(). */
+    if (g_gptp_clog_context_registered) {
+        (void)CLOG_UNREGISTER_CONTEXT(clog_con_helpergptp);
+        clog_con_helpergptp = NULL;
+        g_gptp_clog_context_registered = 0;
+    }
+    (void)CLOG_UNREGISTER_LIBRARY();
 #endif
 }
 
@@ -433,9 +489,16 @@ void helpergptpLog(HELPER_GPTP_LOG_LEVEL level, const char *tag,
     va_start(args, fmt);
     vsnprintf(msg, sizeof(msg), fmt, args);
     va_end(args);
-#ifdef DLT_AVAILABLE
+#ifdef USE_DLT
     DLT_LOG(dlt_con_helpergptp, (DltLogLevelType)level, DLT_INT(gettid()),
             DLT_STRING(path), DLT_INT(line), DLT_STRING(msg));
+#elif defined(USE_CLOG)
+    if (g_gptp_clog_context_registered) {
+        (void)CLOG_LOG(clog_con_helpergptp, (clog_level_t)level,
+                       "[%d:%s:%d] %s", gettid(), path, line, msg);
+    } else if (level == HELPER_GPTP_LOG_LVL_ERROR || level <= GPTP_LOG_LEVEL) {
+        syslog(LOG_ERR, "[%d:%s:%d] %s\n", gettid(), path, line, msg);
+    }
 #else
 
     if (level == HELPER_GPTP_LOG_LVL_ERROR || level <= GPTP_LOG_LEVEL) {
@@ -478,6 +541,33 @@ static void getVirtDevice(char* device_path)
     closedir(dp);
 }
 #endif
+
+#define QTIMER_FREQ_HZ     19200000ULL
+#define QTIMER_TICKS_TO_NS(ticks) (((ticks) * 1000000000ULL) / QTIMER_FREQ_HZ)
+
+static inline uint64_t ptpClockTimeToNs(struct ptp_clock_time ptp_time)
+{
+    return ptp_time.sec * 1000000000LL + ptp_time.nsec;
+}
+
+static inline int64_t ptpClockTimeDiffNs(const struct ptp_clock_time *ptp_time_a,
+                                          const struct ptp_clock_time *ptp_time_b)
+{
+    /* Use signed arithmetic to handle backward clock steps (NTP slew, S2R resume). */
+    return (int64_t)ptpClockTimeToNs(*ptp_time_a) - (int64_t)ptpClockTimeToNs(*ptp_time_b);
+}
+
+static inline uint64_t extractQtimerTicks(const struct ptp_clock_time *ptp_time)
+{
+    return ((uint64_t)ptp_time->sec << 32) | (uint64_t)ptp_time->nsec;
+}
+
+/* Extract QTimer nanoseconds from ptp_clock_time (sec=upper32, nsec=lower32 of QTimer ticks).
+ * This is a TSC team agreement, not a standard PTP usage. */
+static inline uint64_t extractQtimerNs(const struct ptp_clock_time *ptp_time)
+{
+    return QTIMER_TICKS_TO_NS(extractQtimerTicks(ptp_time));
+}
 
 static int gptpClkInit(int *gptp_phc_fd)
 {
@@ -1418,7 +1508,7 @@ bool gptpGetPtpTimeFromBootTime_s(uint64_t *gptp_time_bt, uint64_t time_boot_ns,
     } while ((a != b || a != seq0->load() || b != seq1->load()) && count < 3);
 
     if (count < 3) {
-        int gptpdiff = *gptp_mem - time_boot_ns;
+        int64_t gptpdiff = *gptp_mem - time_boot_ns;
 
         if (gptpdiff > GPTP_BOOTTIME_VALIDTY_RANGE
                 || gptpdiff < -GPTP_BOOTTIME_VALIDTY_RANGE) {
@@ -1484,7 +1574,7 @@ bool gptpGetBootTimeFromPtpTime_s(uint64_t *boot_time_ns, uint64_t ptp_time_ns,
         *inSync = gPtpTD.sync_status;
     }
 
-    int gptpdiff = 0;
+    int64_t gptpdiff = 0;
     gptpdiff =  ptp_time_ns - gPtpTD.local_time;
 
     if (gptpdiff > GPTP_BOOTTIME_VALIDTY_RANGE
@@ -1542,7 +1632,7 @@ bool gptpGetBootTimeFromPtpTime_s(uint64_t *boot_time_ns, uint64_t ptp_time_ns,
     } while ((a != b || a != seq0->load() || b != seq1->load()) && count < 3);
 
     if (count < 3) {
-        int gptpdiff = *gptp_mem - ptp_time_ns;
+        int64_t gptpdiff = *gptp_mem - ptp_time_ns;
 
         if (gptpdiff > GPTP_BOOTTIME_VALIDTY_RANGE
                 || gptpdiff < -GPTP_BOOTTIME_VALIDTY_RANGE) {
@@ -1918,6 +2008,21 @@ bool gptpGetPDelayMeasurementData(pDelayMeasurementData_t *delayData)
     return ret;
 }
 
+static bool gptpIsTscActive(void)
+{
+#ifdef TSC_FEATURE
+    if (gPtpMmap == NULL)
+        return false;
+    gPtpTimeData *td = (gPtpTimeData *)(gPtpMmap + sizeof(pthread_mutex_t));
+    bool active = td->tsc_active;
+    GPTP_LOG_INFO("gptpIsTscActive: tsc_active=%d — %s\n",
+                  active, active ? "using ETU path" : "using fallback path");
+    return active;
+#else
+    return false;
+#endif /* TSC_FEATURE */
+}
+
 bool getgPTPStatus(gptpStatsType_t *status)
 {
     int ret = false;
@@ -1949,6 +2054,8 @@ bool getgPTPStatus(gptpStatsType_t *status)
     memcpy(status, &data->status,
            sizeof(gptpStatsType_t));
     pthread_mutex_unlock((pthread_mutex_t *) &data->lock);
+    /* Set tsc_active after memcpy to prevent overwrite by SCT shared memory copy */
+    status->tsc_active = gptpIsTscActive();
     ret = true;
 #ifdef LIBGPTP_DEBUG
     GPTP_LOG_INFO("qgptp Status Data: gptp_status %d rate_deviation %f IsMaster %d offset %"PRIu64" ",
@@ -2140,6 +2247,84 @@ bool gptpDeinit(void)
     gptpDaemonClientDeInit();
 #endif
     helpergptplogUnregister();
+    return true;
+}
+
+bool gptpGetEtuTimestamps(uint8_t etu_index, uint64_t *avtp_time_ns,
+                          uint64_t *qtimer_time_ns)
+{
+    if (!avtp_time_ns || !qtimer_time_ns)
+        return false;
+
+#ifdef TSC_FEATURE
+    if (gptpIsTscActive()) {
+        struct ptp_extts_request extts_request;
+        struct ptp_extts_event ptp_event;
+        struct ptp_extts_event qtime_event;
+        int cnt;
+
+        memset(&extts_request, 0, sizeof(extts_request));
+        extts_request.index = etu_index;
+        extts_request.flags = PTP_ENABLE_FEATURE;
+
+        if (ioctl(gptpPhcFd, PTP_EXTTS_REQUEST, &extts_request) == 0) {
+            cnt = read(gptpPhcFd, &ptp_event, sizeof(ptp_event));
+            if (cnt == (int)sizeof(ptp_event)) {
+                cnt = read(gptpPhcFd, &qtime_event, sizeof(qtime_event));
+                if (cnt == (int)sizeof(qtime_event)) {
+                    *avtp_time_ns   = ptpClockTimeToNs(ptp_event.t);
+                    *qtimer_time_ns = extractQtimerNs(&qtime_event.t);
+                    return true;
+                }
+                GPTP_LOG_ERROR("gptpGetEtuTimestamps: read QTimer event failed\n");
+            } else {
+                GPTP_LOG_ERROR("gptpGetEtuTimestamps: read AVTP event failed\n");
+            }
+        } else {
+            GPTP_LOG_ERROR("gptpGetEtuTimestamps: ioctl PTP_EXTTS_REQUEST failed\n");
+        }
+        GPTP_LOG_WARNING("gptpGetEtuTimestamps: ETU failed, falling back to PTP_SYS_OFFSET\n");
+    }  /* if (gptpIsTscActive()) */
+#endif /* TSC_FEATURE */
+
+    /* Fallback path (non-TSC always; TSC when inactive or ETU ioctl/read fails):
+     * use PTP_SYS_OFFSET for AVTP time and cntvct_el0 for QTimer. */
+    struct ptp_sys_offset offset;
+    struct ptp_clock_time *pct;
+    struct ptp_clock_time *dev_best = NULL;
+    int64_t interval = LLONG_MAX;
+    unsigned i;
+    uint64_t qticks = 0, qfreq = 0;
+
+    memset(&offset, 0, sizeof(offset));
+    offset.n_samples = PTP_MAX_SAMPLES;
+
+    if (ioctl(gptpPhcFd, PTP_SYS_OFFSET, &offset) == -1) {
+        GPTP_LOG_ERROR("gptpGetEtuTimestamps: PTP_SYS_OFFSET fallback failed\n");
+        return false;
+    }
+
+    pct = &offset.ts[0];
+    for (i = 0; i < offset.n_samples; ++i) {
+        int64_t t = ptpClockTimeDiffNs(pct + 2*i + 2, pct + 2*i);
+        if (t < interval) {
+            dev_best = pct + 2*i + 1;
+            interval = t;
+        }
+    }
+    if (!dev_best)
+        return false;
+
+    *avtp_time_ns = ptpClockTimeToNs(*dev_best);
+
+#if __aarch64__
+    asm volatile("mrs %0, cntvct_el0" : "=r"(qticks));
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(qfreq));
+#else
+    asm volatile("mrrc p15, 1, %Q0, %R0, c14" : "=r"(qticks));
+    qfreq = 19200000ULL;
+#endif
+    *qtimer_time_ns = (qfreq > 0) ? QTIMER_TICKS_TO_NS(qticks) : 0;
     return true;
 }
 

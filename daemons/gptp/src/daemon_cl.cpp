@@ -75,6 +75,7 @@ SPDX-License-Identifier: BSD-3-Clause-Clear
 #include <poll.h>
 #include <pthread.h>
 #include <errno.h>
+#include <syslog.h>
 
 #ifdef ANDROID
 #include <cutils/sockets.h>
@@ -276,6 +277,7 @@ static inline int64_t pctns(struct ptp_clock_time t)
 }
 
 #define CLEANUP_RESOURCES() {\
+                GPTP_LOG_UNREGISTER(); \
                 if( thread_factory != NULL ) delete thread_factory; thread_factory = NULL; \
                 if( default_factory != NULL ) delete default_factory; default_factory = NULL; \
                 if( timerq_factory != NULL ) delete timerq_factory; timerq_factory = NULL; \
@@ -749,11 +751,8 @@ int main(int argc, char **argv)
     LinuxLockFactory *lock_factory = NULL;
     LinuxTimerFactory *timer_factory = NULL;
     LinuxConditionFactory *condition_factory = NULL;
-    LinuxThreadFactory *thread_factory = new LinuxThreadFactory();
-    if (thread_factory == NULL) {
-        GPTP_LOG_ERROR("Failed to allocate thread_factory");
-        return -1;
-    }
+
+    LinuxThreadFactory *thread_factory = NULL;
     // Block SIGUSR1
     {
         sigset_t block;
@@ -761,19 +760,24 @@ int main(int argc, char **argv)
         sigaddset( &block, SIGUSR1 );
 
         if ( pthread_sigmask( SIG_BLOCK, &block, NULL ) != 0 ) {
-            GPTP_LOG_ERROR("Failed to block SIGUSR1");
-
-            if ( thread_factory != NULL ) {
-                delete thread_factory;
-            }
-
+#ifdef ANDROID
+            __android_log_print(ANDROID_LOG_ERROR, "qgptp", "Failed to block SIGUSR1");
+#else
+            syslog(LOG_ERR, "Failed to block SIGUSR1");
+#endif
             return -1;
         }
     }
     GPTP_LOG_REGISTER();
-
+    thread_factory = new LinuxThreadFactory();
+    if (thread_factory == NULL) {
+        GPTP_LOG_ERROR("Failed to allocate thread_factory");
+        CLEANUP_RESOURCES();
+        return -1;
+    }
     if (watchdog_setup(thread_factory) != 0) {
         GPTP_LOG_ERROR("Watchdog handler setup error");
+        CLEANUP_RESOURCES();
         return -1;
     }
 
@@ -911,7 +915,6 @@ int main(int argc, char **argv)
                 pps = true;
             } else if ( strcmp(argv[i] + 1,  "H") == 0 ) {
                 print_usage( argv[0] );
-                GPTP_LOG_UNREGISTER();
                 CLEANUP_RESOURCES();
                 return 0;
             } else if ( strcmp(argv[i] + 1,  "R") == 0 ) {
@@ -940,7 +943,6 @@ int main(int argc, char **argv)
                     if (delay_count > 3) {
                         GPTP_LOG_ERROR("Too many values\n");
                         print_usage( argv[0] );
-                        GPTP_LOG_UNREGISTER();
                         CLEANUP_RESOURCES();
                         return 0;
                     }
@@ -953,7 +955,6 @@ int main(int argc, char **argv)
                 if (delay_count != 4) {
                     GPTP_LOG_ERROR("All four delay values must be specified\n");
                     print_usage( argv[0] );
-                    GPTP_LOG_UNREGISTER();
                     CLEANUP_RESOURCES();
                     return 0;
                 }
@@ -1092,14 +1093,12 @@ int main(int argc, char **argv)
 #endif
     if (timestamper == NULL) {
         GPTP_LOG_ERROR("Failed to allocate EtherTimestamper");
-        GPTP_LOG_UNREGISTER();
         CLEANUP_RESOURCES();
         return -1;
     }
 
     if (pthread_sigmask(SIG_BLOCK, &set, NULL) != 0) {
         perror("pthread_sigmask()");
-        GPTP_LOG_UNREGISTER();
         CLEANUP_RESOURCES();
         return -1;
     }
@@ -1119,7 +1118,6 @@ int main(int argc, char **argv)
 
         if (iniParser.parserError() < 0) {
             GPTP_LOG_ERROR("Can't parse ini file. Aborting file reading..\nExiting gptp daemon.");
-            GPTP_LOG_UNREGISTER();
             CLEANUP_RESOURCES();
             return -1;
         } else {
@@ -1150,7 +1148,6 @@ int main(int argc, char **argv)
                 ifname = new InterfaceName( ifname_eth, strlen(ifname_eth) );
                 if (ifname == NULL) {
                     GPTP_LOG_ERROR("Failed to allocate InterfaceName from ini config");
-                    GPTP_LOG_UNREGISTER();
                     CLEANUP_RESOURCES();
                     return -1;
                 }
@@ -1225,11 +1222,11 @@ int main(int argc, char **argv)
     portInit.net_label = ifname;
 
     if ( !ipc->init( ipc_arg, portInit.reverseSyncEnabled,
-                     portInit.reverseSyncDomain, portInit.reverseSyncRate, portInit.wait_for_sync) ) {
+                     portInit.reverseSyncDomain, portInit.reverseSyncRate,
+                     portInit.wait_for_sync, portInit.tsc_enable) ) {
         delete ipc;
         ipc = NULL;
         GPTP_LOG_ERROR( "ipc init failed\n" );
-        GPTP_LOG_UNREGISTER();
         CLEANUP_RESOURCES();
         return -1;
     }
@@ -1238,7 +1235,6 @@ int main(int argc, char **argv)
 
     if (!isInterfaceValid(ifname_eth)) {
         GPTP_LOG_ERROR("Interface '%s' does not exist or is not accessible\n", ifname_eth);
-        GPTP_LOG_UNREGISTER();
         CLEANUP_RESOURCES();
         return -1;
     }
@@ -1253,7 +1249,6 @@ int main(int argc, char **argv)
 
             if (sig == SIGINT || sig == SIGTERM || sig == SIGHUP || sig == SIGUSR2 ) {
                 perror("sigtimedwait()");
-                GPTP_LOG_UNREGISTER();
                 CLEANUP_RESOURCES();
                 return 0;
             }
@@ -1272,7 +1267,6 @@ int main(int argc, char **argv)
       lock_factory );
     if (pClock == NULL) {
         GPTP_LOG_ERROR("Failed to allocate IEEE1588Clock");
-        GPTP_LOG_UNREGISTER();
         CLEANUP_RESOURCES();
         return -1;
     }
@@ -1338,14 +1332,12 @@ int main(int argc, char **argv)
     pPort = new EtherPort(&portInit);
     if (pPort == NULL) {
         GPTP_LOG_ERROR("Failed to allocate EtherPort");
-        GPTP_LOG_UNREGISTER();
         CLEANUP_RESOURCES();
         return -1;
     }
     GPTP_LOG_ERROR("pPort TSC enable flag: %d\n", pPort->getTSC());
     if (!pPort->init_port()) {
         GPTP_LOG_ERROR("failed to initialize port");
-        GPTP_LOG_UNREGISTER();
         CLEANUP_RESOURCES();
         return -1;
     }
@@ -1409,7 +1401,6 @@ int main(int argc, char **argv)
 
     if (rc) {
         GPTP_LOG_ERROR("gptp_sys_register_lpm failed");
-        GPTP_LOG_UNREGISTER();
         CLEANUP_RESOURCES();
         return -1;
     }
@@ -1431,7 +1422,6 @@ int main(int argc, char **argv)
 
         if (sigwait(&set, &sig) != 0) {
             perror("sigwait()");
-            GPTP_LOG_UNREGISTER();
             CLEANUP_RESOURCES();
             return -1;
         }
@@ -1498,7 +1488,6 @@ int main(int argc, char **argv)
     }
 
 #endif
-    GPTP_LOG_UNREGISTER();
     CLEANUP_RESOURCES();
     return 0;
 }

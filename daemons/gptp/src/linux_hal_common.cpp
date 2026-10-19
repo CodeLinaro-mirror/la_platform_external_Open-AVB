@@ -1193,7 +1193,8 @@ bool LinuxSharedMemoryIPC::init(
     int8_t reverseSyncEnabled,
     int8_t reverseSyncDomain,
     double reverseSyncRate,
-    bool waitForSync )
+    bool waitForSync,
+    bool tsc_enable )
 {
     pthread_mutexattr_t shared;
     LinuxIPCArg* arg;
@@ -1301,6 +1302,7 @@ bool LinuxSharedMemoryIPC::init(
     ptimedata->reverseSyncEnabled = reverseSyncEnabled;
     ptimedata->reverseSyncDomain = reverseSyncDomain;
     ptimedata->reverseSyncRate = reverseSyncRate;
+    ptimedata->tsc_active = tsc_enable;
 
     if (waitForSync == 0) {
         ptimedata->d_status = DEAMON_UP;
